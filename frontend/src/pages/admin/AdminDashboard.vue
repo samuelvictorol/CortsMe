@@ -1,0 +1,18 @@
+<template>
+  <q-page class="dashboard-page admin-page">
+    <div class="page-intro"><div><span class="page-overline">CENTRAL CORTSME</span><h1>Visão do sistema</h1><p>Dados operacionais de toda a plataforma em um único lugar.</p></div><q-btn to="/adm/users" rounded unelevated color="dark" no-caps label="Cadastrar barbeiro" icon="person_add" /></div>
+    <div class="stats-grid"><StatCard label="Clientes ativos" :value="stats.users || 0" hint="contas de clientes" icon="group" positive /><StatCard label="Barbearias" :value="stats.barbers || 0" hint="perfis na plataforma" icon="storefront" positive /><StatCard label="Agendamentos no mês" :value="stats.appointments || 0" hint="volume total" icon="event_available" positive /><StatCard label="Interações do bot" :value="stats.interactions || 0" hint="no mês atual" icon="forum" positive /></div>
+    <div class="admin-overview-grid"><section class="panel-card"><div class="panel-heading"><div><span>ATIVIDADE DA PLATAFORMA</span><h3>Agendamentos por dia</h3></div><q-select v-model="period" dense borderless :options="['Últimos 7 dias', 'Últimos 30 dias']" /></div><div class="fake-chart"><div class="chart-y"><span>120</span><span>80</span><span>40</span><span>0</span></div><div class="chart-bars"><div v-for="(bar, index) in chart" :key="index"><i :style="{ height: `${bar}%` }"><q-tooltip>{{ bar }} agendamentos</q-tooltip></i><span>{{ ['Sex','Sáb','Dom','Seg','Ter','Qua','Qui'][index] }}</span></div></div></div></section>
+      <section class="panel-card system-health"><div class="panel-heading"><div><span>STATUS</span><h3>Saúde do sistema</h3></div><q-badge rounded color="positive" label="Operacional" /></div><div class="health-item"><span class="health-icon green"><q-icon name="api" /></span><div><b>API Express</b><small>Respondendo normalmente</small></div><b>24 ms</b></div><div class="health-item"><span class="health-icon blue"><q-icon name="storage" /></span><div><b>MongoDB</b><small>Conectado</small></div><q-icon name="check_circle" color="positive" /></div><div class="health-item"><span class="health-icon red"><q-icon name="bolt" /></span><div><b>Redis</b><small>Cache e eventos online</small></div><q-icon name="check_circle" color="positive" /></div></section></div>
+    <section class="panel-card q-mt-lg"><div class="panel-heading"><div><span>ÚLTIMAS INTERAÇÕES</span><h3>O que os clientes estão perguntando</h3></div><q-btn to="/adm/bot-logs" flat rounded no-caps label="Ver todos" icon-right="arrow_forward" /></div><div class="interaction-list"><article v-for="item in recent" :key="item._id"><span class="interaction-icon"><q-icon :name="intentIcon(item.intent)" /></span><div><b>{{ item.message }}</b><small>{{ item.profile?.businessName }} · {{ dateTime(item.createdAt) }}</small></div><q-badge rounded color="grey-3" text-color="dark" :label="item.intent" /></article><div v-if="!recent.length" class="panel-empty compact"><q-icon name="forum" /><p>As conversas do bot aparecerão aqui.</p></div></div></section>
+  </q-page>
+</template>
+
+<script setup>
+import { onMounted, ref } from 'vue'
+import { api } from 'boot/axios'
+import StatCard from 'components/StatCard.vue'
+const stats = ref({}); const recent = ref([]); const period = ref('Últimos 7 dias'); const chart = [48, 72, 38, 66, 84, 58, 92]
+const dateTime = value => new Date(value).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }); const intentIcon = value => ({ booking: 'event_available', services: 'content_cut', location: 'location_on' }[value] || 'chat_bubble_outline')
+onMounted(async () => { const { data } = await api.get('/admin/dashboard'); stats.value = data.stats; recent.value = data.recent })
+</script>
