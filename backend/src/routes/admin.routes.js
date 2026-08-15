@@ -1,11 +1,18 @@
 const router = require('express').Router();
-const { User, BarberProfile, Appointment, BotLog, Media } = require('../collections/CortsmeModels');
+const {
+    User, BarberProfile, Appointment, BotLog, Media,
+    BillingPlan, Subscription, BillingPayment
+} = require('../collections/CortsmeModels');
 const { requireAuth, allowRoles } = require('../middlewares/corts-auth.middleware');
 const { createUser, updateUser, userView, findByIdentity } = require('../services/user.service');
 const { createDefaultProfile, uniqueSlug } = require('../services/profile.service');
 const { notifyAppointment } = require('../services/appointment.service');
 const { appendAppointmentHistory } = require('../services/appointment-history.service');
 const { asyncRoute, pageOptions, paged } = require('./route.helpers');
+const {
+    getBillingSettings, updateBillingSettings, settingsView, planView, normalizePlanPayload,
+    ensureSubscription, calculateSubscriptionState, adjustSubscription, confirmPayment, notifyBillingChanged
+} = require('../services/billing.service');
 
 router.use(requireAuth, allowRoles('ADMIN'));
 
@@ -17,6 +24,170 @@ router.get('/dashboard', asyncRoute(async (req, res) => {
         BotLog.find().sort({ createdAt: -1 }).limit(6).populate('profile', 'businessName slug').lean()
     ]);
     res.json({ stats: { users, barbers, appointments, interactions }, recent });
+}));
+
+function adminSubscriptionView(subscription) {
+    const raw = typeof subscription.toObject === 'function' ? subscription.toObject() : subscription;
+    const state = calculateSubscriptionState(raw, raw.plan);
+    const owner = raw.profile?.owner ? userView(raw.profile.owner) : null;
+    return {
+        ...state, id: String(raw._id), status: state.status, note: raw.note || '',
+        profile: raw.profile && typeof raw.profile === 'object' ? {
+            id: String(raw.profile._id), businessName: raw.profile.businessName, slug: raw.profile.slug,
+            email: owner?.email || '', phone: owner?.phone || '', owner, user: owner
+        } : raw.profile,
+        createdAt: raw.createdAt, updatedAt: raw.updatedAt
+    };
+}
+
+function adminPaymentView(payment) {
+    const raw = typeof payment.toObject === 'function' ? payment.toObject() : payment;
+    return {
+        id: String(raw._id), provider: raw.provider, orderNsu: raw.orderNsu,
+        amountCents: raw.amountCents, paidAmountCents: raw.paidAmountCents, durationDays: raw.durationDays,
+        status: raw.status, checkoutUrl: raw.checkoutUrl, invoiceSlug: raw.invoiceSlug,
+        transactionNsu: raw.transactionNsu, receiptUrl: raw.receiptUrl,
+        captureMethod: raw.captureMethod, paidAt: raw.paidAt, failureReason: raw.failureReason,
+        profile: raw.profile && typeof raw.profile === 'object'
+            ? { id: String(raw.profile._id), businessName: raw.profile.businessName, slug: raw.profile.slug }
+            : raw.profile,
+        plan: raw.plan && typeof raw.plan === 'object' ? planView(raw.plan) : raw.plan,
+        createdAt: raw.createdAt, updatedAt: raw.updatedAt
+    };
+}
+
+async function matchingBillingProfileIds(search) {
+    const raw = String(search || '').trim();
+    if (!raw) return [];
+    const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const identity = await findByIdentity(raw);
+    const users = await User.find({
+        $or: [{ name: { $regex: escaped, $options: 'i' } }, ...(identity ? [{ _id: identity._id }] : [])]
+    }).select('_id');
+    const profiles = await BarberProfile.find({
+        $or: [
+            { businessName: { $regex: escaped, $options: 'i' } },
+            { slug: { $regex: escaped, $options: 'i' } },
+            ...(users.length ? [{ owner: { $in: users.map((item) => item._id) } }] : [])
+        ]
+    }).select('_id');
+    return profiles.map((item) => item._id);
+}
+
+router.get('/billing/settings', asyncRoute(async (req, res) => {
+    res.json({ settings: settingsView(await getBillingSettings()) });
+}));
+
+router.put('/billing/settings', asyncRoute(async (req, res) => {
+    const settings = await updateBillingSettings(req.body, req.auth.userId);
+    res.json({ settings: settingsView(settings) });
+}));
+
+router.get('/billing/plans', asyncRoute(async (req, res) => {
+    const plans = await BillingPlan.find().sort({ displayOrder: 1, priceCents: 1 }).lean();
+    res.json({ plans: plans.map(planView) });
+}));
+
+router.post('/billing/plans', asyncRoute(async (req, res) => {
+    if (await BillingPlan.countDocuments() >= 5) return res.status(409).json({ message: 'O sistema permite no máximo 5 planos.', code: 'BILLING_PLAN_LIMIT' });
+    const normalized = normalizePlanPayload(req.body);
+    if (normalized.isFree && await BillingPlan.exists({ isFree: true })) {
+        return res.status(409).json({ message: 'Já existe um plano gratuito.' });
+    }
+    const plan = await BillingPlan.create(normalized);
+    res.status(201).json({ plan: planView(plan) });
+}));
+
+router.patch('/billing/plans/:id', asyncRoute(async (req, res) => {
+    const plan = await BillingPlan.findById(req.params.id);
+    if (!plan) return res.status(404).json({ message: 'Plano não encontrado.' });
+    if (plan.isFree && req.body.isFree === false) return res.status(400).json({ message: 'O plano gratuito base não pode ser transformado em plano pago.' });
+    if (!plan.isFree && req.body.isFree === true && await BillingPlan.exists({ isFree: true })) {
+        return res.status(409).json({ message: 'Já existe um plano gratuito.' });
+    }
+    Object.assign(plan, normalizePlanPayload(req.body, plan.toObject()));
+    await plan.save();
+    const affected = await Subscription.find({ plan: plan._id }).select('profile');
+    await Promise.all(affected.map((item) => notifyBillingChanged(item.profile, 'plan_updated')));
+    res.json({ plan: planView(plan) });
+}));
+
+router.delete('/billing/plans/:id', asyncRoute(async (req, res) => {
+    const plan = await BillingPlan.findById(req.params.id);
+    if (!plan) return res.status(404).json({ message: 'Plano não encontrado.' });
+    if (plan.isFree) return res.status(400).json({ message: 'O plano gratuito base não pode ser excluído.' });
+    const inUse = await Promise.all([
+        Subscription.exists({ plan: plan._id }), BillingPayment.exists({ plan: plan._id })
+    ]);
+    if (inUse.some(Boolean)) return res.status(409).json({ message: 'Este plano possui histórico. Inative-o para preservar os dados financeiros.' });
+    await plan.deleteOne();
+    res.status(204).end();
+}));
+
+router.get('/billing/subscriptions', asyncRoute(async (req, res) => {
+    const { page, limit, skip } = pageOptions(req.query);
+    const profilesWithoutSubscription = await BarberProfile.find({
+        _id: { $nin: await Subscription.distinct('profile') }
+    }).select('_id');
+    await Promise.all(profilesWithoutSubscription.map((profile) => ensureSubscription(profile._id)));
+    const filter = {};
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.planId) filter.plan = req.query.planId;
+    if (req.query.search) filter.profile = { $in: await matchingBillingProfileIds(req.query.search) };
+    const [items, total] = await Promise.all([
+        Subscription.find(filter).populate({ path: 'profile', select: 'businessName slug owner', populate: { path: 'owner' } })
+            .populate('plan').sort({ updatedAt: -1 }).skip(skip).limit(limit).lean(),
+        Subscription.countDocuments(filter)
+    ]);
+    res.json({ subscriptions: items.map(adminSubscriptionView), pagination: paged([], total, page, limit).pagination });
+}));
+
+router.patch('/billing/subscriptions/:id', asyncRoute(async (req, res) => {
+    const subscription = await Subscription.findById(req.params.id);
+    if (!subscription) return res.status(404).json({ message: 'Assinatura não encontrada.' });
+    const billing = await adjustSubscription(subscription._id, req.body, req.auth.userId);
+    const updated = await Subscription.findById(subscription._id)
+        .populate({ path: 'profile', select: 'businessName slug owner', populate: { path: 'owner' } }).populate('plan').lean();
+    res.json({ subscription: adminSubscriptionView(updated), billing });
+}));
+
+router.get('/billing/payments', asyncRoute(async (req, res) => {
+    const { page, limit, skip } = pageOptions(req.query);
+    const filter = {};
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.profileId) filter.profile = req.query.profileId;
+    if (req.query.planId) filter.plan = req.query.planId;
+    if (req.query.search) {
+        const escaped = String(req.query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const profileIds = await matchingBillingProfileIds(req.query.search);
+        filter.$or = [
+            { orderNsu: { $regex: escaped, $options: 'i' } },
+            { transactionNsu: { $regex: escaped, $options: 'i' } },
+            ...(profileIds.length ? [{ profile: { $in: profileIds } }] : [])
+        ];
+    }
+    const [items, total] = await Promise.all([
+        BillingPayment.find(filter).populate('profile', 'businessName slug').populate('plan')
+            .sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+        BillingPayment.countDocuments(filter)
+    ]);
+    res.json({ payments: items.map(adminPaymentView), pagination: paged([], total, page, limit).pagination });
+}));
+
+router.post('/billing/payments/:id/simulate', asyncRoute(async (req, res) => {
+    if (String(process.env.ALLOW_PAYMENT_SIMULATION).toLowerCase() !== 'true') {
+        return res.status(403).json({ message: 'Simulação de pagamentos está desabilitada.', code: 'PAYMENT_SIMULATION_DISABLED' });
+    }
+    const payment = await BillingPayment.findById(req.params.id);
+    if (!payment) return res.status(404).json({ message: 'Pagamento não encontrado.' });
+    const result = await confirmPayment({
+        order_nsu: payment.orderNsu, amount: payment.amountCents,
+        transaction_nsu: req.body.transactionNsu || `sim-${Date.now()}-${payment._id}`,
+        invoice_slug: req.body.slug || `simulation-${payment._id}`,
+        paid_amount: payment.amountCents, capture_method: req.body.captureMethod || 'pix',
+        receipt_url: req.body.receiptUrl || ''
+    }, { skipProviderCheck: true, provider: 'SYSTEM' });
+    res.json({ success: true, billing: result.billing, payment: adminPaymentView(result.payment) });
 }));
 
 router.get('/users', asyncRoute(async (req, res) => {
@@ -72,7 +243,15 @@ router.get('/profiles', asyncRoute(async (req, res) => {
         BarberProfile.find(filter).populate('owner').sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
         BarberProfile.countDocuments(filter)
     ]);
-    res.json(paged(data.map((item) => ({ ...item, owner: userView(item.owner) })), total, page, limit));
+    const enriched = await Promise.all(data.map(async (item) => {
+        const subscription = await ensureSubscription(item._id);
+        return {
+            ...item, owner: userView(item.owner),
+            billing: calculateSubscriptionState(subscription, subscription.plan),
+            currentPlan: planView(subscription.plan)
+        };
+    }));
+    res.json(paged(enriched, total, page, limit));
 }));
 
 router.patch('/profiles/:id', asyncRoute(async (req, res) => {

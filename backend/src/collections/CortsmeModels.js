@@ -133,10 +133,109 @@ const mediaSchema = new Schema({
     data: { type: Buffer, required: true }
 }, { timestamps: true });
 
+const billingSettingsSchema = new Schema({
+    key: { type: String, default: 'default', immutable: true, unique: true },
+    provider: { type: String, enum: ['INFINITEPAY'], default: 'INFINITEPAY', immutable: true },
+    handle: { type: String, default: '', trim: true, lowercase: true },
+    webhookUrl: { type: String, default: '', trim: true },
+    redirectBaseUrl: { type: String, default: '', trim: true },
+    enabled: { type: Boolean, default: true },
+    updatedBy: { type: Schema.Types.ObjectId, ref: 'CortsmeUser', default: null }
+}, { timestamps: true });
+
+const billingPlanSchema = new Schema({
+    name: { type: String, required: true, trim: true },
+    slug: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    description: { type: String, default: '', trim: true },
+    priceCents: { type: Number, required: true, min: 0 },
+    durationDays: { type: Number, default: 30, min: 1, max: 366 },
+    isFree: { type: Boolean, default: false },
+    active: { type: Boolean, default: true, index: true },
+    highlighted: { type: Boolean, default: false },
+    badge: { type: String, default: '', trim: true },
+    displayOrder: { type: Number, default: 0 },
+    features: { type: [String], default: [] },
+    entitlements: {
+        onlineBooking: { type: Boolean, default: true },
+        chatbot: { type: Boolean, default: true },
+        publishedSite: { type: Boolean, default: true }
+    }
+}, { timestamps: true });
+billingPlanSchema.index({ isFree: 1 }, { unique: true, partialFilterExpression: { isFree: true } });
+
+const subscriptionSchema = new Schema({
+    profile: { type: Schema.Types.ObjectId, ref: 'BarberProfile', required: true, unique: true },
+    plan: { type: Schema.Types.ObjectId, ref: 'BillingPlan', required: true, index: true },
+    status: {
+        type: String,
+        enum: ['FREE', 'PENDING_PAYMENT', 'ACTIVE', 'EXPIRED', 'SUSPENDED', 'CANCELLED'],
+        default: 'FREE',
+        index: true
+    },
+    periodStart: { type: Date, default: null },
+    periodEnd: { type: Date, default: null, index: true },
+    lastPayment: { type: Schema.Types.ObjectId, ref: 'BillingPayment', default: null },
+    manuallyAdjustedBy: { type: Schema.Types.ObjectId, ref: 'CortsmeUser', default: null },
+    note: { type: String, default: '', trim: true }
+}, { timestamps: true });
+subscriptionSchema.index({ status: 1, periodEnd: 1 });
+
+const billingPaymentSchema = new Schema({
+    provider: { type: String, enum: ['INFINITEPAY'], default: 'INFINITEPAY' },
+    profile: { type: Schema.Types.ObjectId, ref: 'BarberProfile', required: true, index: true },
+    subscription: { type: Schema.Types.ObjectId, ref: 'Subscription', required: true, index: true },
+    plan: { type: Schema.Types.ObjectId, ref: 'BillingPlan', required: true, index: true },
+    orderNsu: { type: String, required: true, unique: true, trim: true },
+    amountCents: { type: Number, required: true, min: 1 },
+    durationDays: { type: Number, required: true, min: 1, max: 366, default: 30 },
+    planSnapshot: { type: Schema.Types.Mixed, default: null },
+    status: {
+        type: String,
+        enum: ['PENDING', 'PROCESSING', 'PAID', 'FAILED', 'CANCELLED'],
+        default: 'PENDING',
+        index: true
+    },
+    checkoutUrl: { type: String, default: '' },
+    invoiceSlug: { type: String, default: '' },
+    transactionNsu: { type: String, trim: true },
+    receiptUrl: { type: String, default: '' },
+    captureMethod: { type: String, default: '' },
+    paidAmountCents: { type: Number, default: 0 },
+    paidAt: { type: Date, default: null },
+    expiresAt: { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000) },
+    failureReason: { type: String, default: '' },
+    providerPayload: { type: Schema.Types.Mixed, default: null },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'CortsmeUser', required: true }
+}, { timestamps: true });
+billingPaymentSchema.index(
+    { transactionNsu: 1 },
+    { unique: true, partialFilterExpression: { transactionNsu: { $type: 'string' } } }
+);
+billingPaymentSchema.index({ profile: 1, createdAt: -1 });
+
+const billingEventSchema = new Schema({
+    provider: { type: String, enum: ['INFINITEPAY', 'SYSTEM'], default: 'INFINITEPAY' },
+    eventKey: { type: String, required: true, unique: true },
+    type: { type: String, required: true, index: true },
+    payment: { type: Schema.Types.ObjectId, ref: 'BillingPayment', default: null, index: true },
+    status: { type: String, enum: ['PROCESSING', 'PROCESSED', 'REJECTED', 'FAILED'], default: 'PROCESSING' },
+    payload: { type: Schema.Types.Mixed, default: null },
+    result: { type: Schema.Types.Mixed, default: null },
+    processedAt: { type: Date, default: null }
+}, { timestamps: true });
+
 const User = mongoose.models.CortsmeUser || mongoose.model('CortsmeUser', userSchema);
 const BarberProfile = mongoose.models.BarberProfile || mongoose.model('BarberProfile', barberProfileSchema);
 const Appointment = mongoose.models.Appointment || mongoose.model('Appointment', appointmentSchema);
 const BotLog = mongoose.models.BotLog || mongoose.model('BotLog', botLogSchema);
 const Media = mongoose.models.Media || mongoose.model('Media', mediaSchema);
+const BillingSettings = mongoose.models.BillingSettings || mongoose.model('BillingSettings', billingSettingsSchema);
+const BillingPlan = mongoose.models.BillingPlan || mongoose.model('BillingPlan', billingPlanSchema);
+const Subscription = mongoose.models.Subscription || mongoose.model('Subscription', subscriptionSchema);
+const BillingPayment = mongoose.models.BillingPayment || mongoose.model('BillingPayment', billingPaymentSchema);
+const BillingEvent = mongoose.models.BillingEvent || mongoose.model('BillingEvent', billingEventSchema);
 
-module.exports = { User, BarberProfile, Appointment, BotLog, Media };
+module.exports = {
+    User, BarberProfile, Appointment, BotLog, Media,
+    BillingSettings, BillingPlan, Subscription, BillingPayment, BillingEvent
+};

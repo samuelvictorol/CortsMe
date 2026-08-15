@@ -120,5 +120,10 @@ function safeMapUrl (value) {
   } catch { return '' }
 }
 
-onMounted(async () => { try { profile.value = (await api.get(`/public/barbers/${route.params.slug}`)).data.profile } catch (error) { $q.notify({ type: 'negative', message: error.response?.data?.message || 'Página não encontrada.' }) } })
+onMounted(async () => {
+  try {
+    const { data } = await api.get(`/public/barbers/${route.params.slug}`)
+    profile.value = { ...data.profile, billing: data.billing, entitlements: data.entitlements, plan: data.plan }
+  } catch (error) { $q.notify({ type: 'negative', message: error.response?.data?.message || 'Página não encontrada.' }) }
+})
 </script>

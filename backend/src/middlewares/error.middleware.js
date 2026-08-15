@@ -10,7 +10,7 @@ function errorHandler(error, req, res, next) {
     console.error(error);
 
     if (error.statusCode) {
-        return res.status(error.statusCode).json({ message: error.message, code: error.code });
+        return res.status(error.statusCode).json({ message: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) });
     }
 
     if (error.code === 11000) {

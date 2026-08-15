@@ -15,7 +15,7 @@
           <span v-else>{{ initials }}</span>
           <q-menu>
             <q-list style="min-width: 180px">
-              <q-item><q-item-section><q-item-label>{{ auth.user?.name }}</q-item-label><q-item-label caption>{{ roleLabel }}</q-item-label></q-item-section></q-item>
+              <q-item><q-item-section><q-item-label>{{ auth.user?.name }}</q-item-label><q-item-label caption>{{ roleLabel }}</q-item-label><q-badge v-if="auth.user?.role === 'BARBER' && billingPlanName" class="q-mt-xs self-start" rounded color="lime-5" text-color="dark" :label="billingPlanName" /></q-item-section></q-item>
               <q-separator />
               <q-item clickable v-close-popup @click="logout"><q-item-section avatar><q-icon name="logout" /></q-item-section><q-item-section>Sair</q-item-section></q-item>
             </q-list>
@@ -40,13 +40,22 @@
         <div class="drawer-user q-ma-md q-pa-md">
           <div class="row items-center no-wrap">
             <q-avatar color="lime-5" text-color="dark" size="38px"><img v-if="auth.user?.avatar" :src="auth.user.avatar"><span v-else>{{ initials }}</span></q-avatar>
-            <div class="q-ml-sm ellipsis"><div class="text-weight-medium ellipsis">{{ auth.user?.name }}</div><div class="text-caption text-grey-5">{{ roleLabel }}</div></div>
+            <div class="q-ml-sm ellipsis"><div class="text-weight-medium ellipsis">{{ auth.user?.name }}</div><div class="text-caption text-grey-5">{{ roleLabel }}</div><q-badge v-if="auth.user?.role === 'BARBER' && billingPlanName" class="q-mt-xs" rounded color="lime-5" text-color="dark" :label="billingPlanName" /></div>
           </div>
         </div>
       </div>
     </q-drawer>
 
-    <q-page-container><router-view /></q-page-container>
+    <q-page-container>
+      <div v-if="billingAlert" class="billing-alert-wrap">
+        <q-banner rounded :class="['billing-alert', `billing-alert--${billingAlert.type}`]">
+          <template #avatar><q-icon :name="billingAlert.icon" size="28px" /></template>
+          <div class="billing-alert__content"><b>{{ billingAlert.title }}</b><span>{{ billingAlert.message }}</span></div>
+          <template #action><q-btn to="/barber/financeiro" rounded unelevated no-caps :color="billingAlert.type === 'expired' ? 'negative' : 'dark'" label="Ir para o financeiro" icon-right="arrow_forward" /></template>
+        </q-banner>
+      </div>
+      <router-view />
+    </q-page-container>
 
     <q-footer class="mobile-nav lt-md text-dark">
       <q-tabs dense no-caps active-color="dark" indicator-color="transparent">
@@ -61,6 +70,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { io } from 'socket.io-client'
 import { useQuasar } from 'quasar'
+import { api } from 'boot/axios'
 import BrandLogo from 'components/BrandLogo.vue'
 import { useAuthStore } from 'stores/auth-store'
 
@@ -70,6 +80,7 @@ const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const $q = useQuasar()
+const billing = ref(null)
 let socket
 
 const menus = {
@@ -79,6 +90,7 @@ const menus = {
     { label: 'Clientes', short: 'Clientes', icon: 'groups', to: '/barber/clientes' },
     { label: 'Meu site', short: 'Meu site', icon: 'web', to: '/barber/meu-site' },
     { label: 'Bot assistente', short: 'Bot', icon: 'smart_toy', to: '/barber/bot' },
+    { label: 'Financeiro', short: 'Plano', icon: 'account_balance_wallet', to: '/barber/financeiro' },
     { label: 'Configurações', icon: 'tune', to: '/barber/configuracoes' }
   ],
   ADMIN: [
@@ -86,7 +98,8 @@ const menus = {
     { label: 'Usuários', short: 'Usuários', icon: 'group', to: '/adm/users' },
     { label: 'Barbearias', short: 'Barbearias', icon: 'storefront', to: '/adm/profiles' },
     { label: 'Agendamentos', short: 'Agenda', icon: 'event_note', to: '/adm/appointments' },
-    { label: 'Interações do bot', icon: 'forum', to: '/adm/bot-logs' }
+    { label: 'Interações do bot', icon: 'forum', to: '/adm/bot-logs' },
+    { label: 'Financeiro', short: 'Financeiro', icon: 'payments', to: '/adm/financeiro' }
   ],
   USER: [
     { label: 'Meus agendamentos', short: 'Agenda', icon: 'event_available', to: '/user' },
@@ -94,19 +107,67 @@ const menus = {
     { label: 'Explorar', short: 'Explorar', icon: 'travel_explore', to: '/barbearia-premium' }
   ]
 }
-const menu = computed(() => menus[auth.user?.role] || [])
+const billingRoot = computed(() => billing.value?.billing || billing.value || {})
+const billingSubscription = computed(() => billingRoot.value.subscription || billingRoot.value.currentSubscription || {})
+const billingPlan = computed(() => billingRoot.value.plan || billingRoot.value.currentPlan || billingSubscription.value.plan || {})
+const billingPlanName = computed(() => billingPlan.value.name || billingPlan.value.label || '')
+const billingDaysRemaining = computed(() => {
+  const explicit = billingRoot.value.daysRemaining ?? billingSubscription.value.daysRemaining
+  if (explicit !== undefined && explicit !== null) return Number(explicit)
+  const expiresAt = billingSubscription.value.currentPeriodEnd || billingSubscription.value.expiresAt
+  return expiresAt ? Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86400000) : null
+})
+const billingAlert = computed(() => {
+  if (auth.user?.role !== 'BARBER' || !billing.value || billingPlan.value.isFree || Number(billingPlan.value.priceCents || 0) === 0) return null
+  const status = String(billingSubscription.value.status || billingRoot.value.status || '').toUpperCase()
+  const days = billingDaysRemaining.value
+  if (['EXPIRED', 'SUSPENDED', 'CANCELED', 'CANCELLED'].includes(status) || (days !== null && days < 0)) {
+    return { type: 'expired', icon: 'lock_clock', title: 'Seu plano está suspenso.', message: 'O pagamento mensal expirou. Seu site continua publicado, mas agendamentos e bot estão bloqueados até a renovação.' }
+  }
+  if (days !== null && days >= 0 && days <= 7) {
+    const label = days === 0 ? 'hoje' : `em ${days} dia${days === 1 ? '' : 's'}`
+    return { type: 'warning', icon: 'schedule', title: `Seu plano vence ${label}.`, message: 'Renove agora para manter agendamentos e atendimento pelo bot sem interrupções.' }
+  }
+  return null
+})
+const menu = computed(() => (menus[auth.user?.role] || []).map((item) => item.to === '/barber/financeiro' && billingPlanName.value ? { ...item, badge: billingPlanName.value } : item))
 const activeItem = computed(() => menu.value.find((item) => item.to === route.path))
 const initials = computed(() => auth.user?.name?.split(' ').slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'CM')
 const roleLabel = computed(() => ({ ADMIN: 'Administrador', BARBER: 'Profissional', USER: 'Cliente' }[auth.user?.role]))
 
 function logout () { auth.logout(); router.push('/') }
+async function loadBilling () {
+  if (auth.user?.role !== 'BARBER') return
+  try { billing.value = (await api.get('/barber/billing')).data } catch { billing.value = null }
+}
 onMounted(() => {
+  loadBilling()
   if (!auth.token) return
   socket = io(process.env.SOCKET_URL, { auth: { token: auth.token } })
   socket.on('appointment:changed', () => {
     notification.value = true
     $q.notify({ message: 'Sua agenda foi atualizada em tempo real.', color: 'dark', icon: 'event_available', position: 'top-right' })
   })
+  socket.on('billing:changed', () => {
+    loadBilling()
+    notification.value = true
+    $q.notify({ message: 'A situação do seu plano foi atualizada.', color: 'dark', icon: 'payments', position: 'top-right' })
+  })
 })
 onBeforeUnmount(() => socket?.disconnect())
 </script>
+
+<style scoped>
+.billing-alert-wrap { padding: 18px clamp(16px, 3vw, 38px) 0; background: #f5f5f0; }
+.billing-alert { border: 1px solid transparent; box-shadow: 0 10px 30px rgba(17, 22, 19, .06); }
+.billing-alert--warning { color: #3d3100; background: #fff6cf; border-color: #ead681; }
+.billing-alert--expired { color: #6f1220; background: #fff0f1; border-color: #efb6bc; }
+.billing-alert__content { display: flex; flex-direction: column; gap: 2px; }
+.billing-alert__content b { font-size: 15px; }
+.billing-alert__content span { font-size: 13px; opacity: .82; }
+@media (max-width: 599px) {
+  .billing-alert-wrap { padding: 10px 10px 0; }
+  .billing-alert :deep(.q-banner__content) { min-width: 0; }
+  .billing-alert :deep(.q-banner__actions) { padding-left: 48px; padding-top: 10px; width: 100%; justify-content: flex-start; }
+}
+</style>

@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const multer = require('multer');
-const { BarberProfile, Appointment, BotLog, Media, User } = require('../collections/CortsmeModels');
+const { BarberProfile, Appointment, BotLog, Media, User, BillingPayment } = require('../collections/CortsmeModels');
 const { requireAuth, allowRoles } = require('../middlewares/corts-auth.middleware');
 const { uniqueSlug } = require('../services/profile.service');
 const { assertAvailable, notifyAppointment } = require('../services/appointment.service');
@@ -10,6 +10,10 @@ const { normalizeMapEmbed } = require('../services/embed.service');
 const { appendAppointmentHistory, markAppointmentCreated } = require('../services/appointment-history.service');
 const { customersForProfile, customerSummary } = require('../services/customer.service');
 const { asyncRoute, pageOptions, paged } = require('./route.helpers');
+const {
+    getBillingSettings, settingsView, listPublicPlans, getSubscriptionSummary,
+    createCheckout, verifyPaymentReturn
+} = require('../services/billing.service');
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -25,6 +29,20 @@ async function ownProfile(userId) {
     return profile;
 }
 
+function paymentView(payment) {
+    const raw = typeof payment.toObject === 'function' ? payment.toObject() : payment;
+    return {
+        id: String(raw._id), orderNsu: raw.orderNsu, amountCents: raw.amountCents, durationDays: raw.durationDays,
+        status: raw.status, checkoutUrl: raw.checkoutUrl, invoiceSlug: raw.invoiceSlug,
+        transactionNsu: raw.transactionNsu, receiptUrl: raw.receiptUrl,
+        captureMethod: raw.captureMethod, paidAt: raw.paidAt, expiresAt: raw.expiresAt,
+        createdAt: raw.createdAt,
+        plan: raw.plan && typeof raw.plan === 'object'
+            ? { id: String(raw.plan._id), name: raw.plan.name, slug: raw.plan.slug }
+            : raw.plan
+    };
+}
+
 router.get('/dashboard', asyncRoute(async (req, res) => {
     const profile = await ownProfile(req.auth.userId);
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -36,13 +54,63 @@ router.get('/dashboard', asyncRoute(async (req, res) => {
         BotLog.countDocuments({ profile: profile._id, createdAt: { $gte: month } })
     ]);
     const revenue = monthItems.reduce((sum, item) => sum + item.price, 0);
+    const billing = await getSubscriptionSummary(profile._id, { notify: true });
     res.json({
         stats: { todayCount, monthCount: monthItems.length, revenue, botInteractions },
-        nextAppointments: nextAppointments.map((item) => ({ ...item, user: item.user ? userView(item.user) : null }))
+        nextAppointments: nextAppointments.map((item) => ({ ...item, user: item.user ? userView(item.user) : null })),
+        billing
     });
 }));
 
-router.get('/profile', asyncRoute(async (req, res) => res.json({ profile: await ownProfile(req.auth.userId) })));
+router.get('/billing', asyncRoute(async (req, res) => {
+    const profile = await ownProfile(req.auth.userId);
+    const [settings, billing, payments] = await Promise.all([
+        getBillingSettings(), getSubscriptionSummary(profile._id, { notify: true }),
+        BillingPayment.find({ profile: profile._id }).populate('plan', 'name slug').sort({ createdAt: -1 }).limit(10).lean()
+    ]);
+    const config = settingsView(settings);
+    res.json({
+        provider: 'INFINITEPAY', providerConfigured: config.ready, config,
+        billing, subscription: billing, currentPlan: billing.plan,
+        plans: config.ready ? await listPublicPlans() : [], payments: payments.map(paymentView)
+    });
+}));
+
+router.get('/billing/plans', asyncRoute(async (req, res) => {
+    await ownProfile(req.auth.userId);
+    const config = settingsView(await getBillingSettings());
+    res.json({ providerConfigured: config.ready, config, plans: config.ready ? await listPublicPlans() : [] });
+}));
+
+router.get('/billing/payments', asyncRoute(async (req, res) => {
+    const profile = await ownProfile(req.auth.userId);
+    const { page, limit, skip } = pageOptions(req.query);
+    const [items, total] = await Promise.all([
+        BillingPayment.find({ profile: profile._id }).populate('plan', 'name slug').sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+        BillingPayment.countDocuments({ profile: profile._id })
+    ]);
+    res.json(paged(items.map(paymentView), total, page, limit));
+}));
+
+router.post('/billing/checkout', asyncRoute(async (req, res) => {
+    const profile = await ownProfile(req.auth.userId);
+    const result = await createCheckout({ profile, user: req.user, planId: req.body.planId || req.body.plan_id });
+    res.status(result.reused ? 200 : 201).json({
+        checkoutUrl: result.checkoutUrl, url: result.checkoutUrl,
+        payment: paymentView(result.payment), reused: result.reused
+    });
+}));
+
+router.post('/billing/verify', asyncRoute(async (req, res) => {
+    const profile = await ownProfile(req.auth.userId);
+    const result = await verifyPaymentReturn({ profileId: profile._id, payload: req.body });
+    res.json({ success: true, idempotent: result.idempotent, billing: result.billing, payment: paymentView(result.payment) });
+}));
+
+router.get('/profile', asyncRoute(async (req, res) => {
+    const profile = await ownProfile(req.auth.userId);
+    res.json({ profile, billing: await getSubscriptionSummary(profile._id, { notify: true }) });
+}));
 
 router.put('/profile', asyncRoute(async (req, res) => {
     const profile = await ownProfile(req.auth.userId);

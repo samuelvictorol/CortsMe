@@ -4,6 +4,7 @@ const { requireAuth, allowRoles } = require('../middlewares/corts-auth.middlewar
 const { assertAvailable, notifyAppointment } = require('../services/appointment.service');
 const { appendAppointmentHistory, markAppointmentCreated } = require('../services/appointment-history.service');
 const { asyncRoute, pageOptions, paged } = require('./route.helpers');
+const { assertOnlineBookingAllowed } = require('../services/billing.service');
 
 router.use(requireAuth, allowRoles('USER', 'BARBER', 'ADMIN'));
 
@@ -21,6 +22,7 @@ router.get('/', asyncRoute(async (req, res) => {
 router.post('/', asyncRoute(async (req, res) => {
     const profile = await BarberProfile.findOne({ slug: req.body.slug, active: true, published: true });
     if (!profile) return res.status(404).json({ message: 'Barbearia não encontrada.' });
+    await assertOnlineBookingAllowed(profile._id);
     const service = profile.services.id(req.body.serviceId);
     if (!service?.active) return res.status(400).json({ message: 'Serviço indisponível.' });
     const { startDate, endDate } = await assertAvailable(profile, req.body.start, service.duration);

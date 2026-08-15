@@ -10,17 +10,22 @@ function slugify(value) {
         .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 }
 
-async function uniqueSlug(value, ignoreId) {
+async function uniqueSlug(value, ignoreId, options = {}) {
     const base = slugify(value) || 'meu-espaco';
     let candidate = base;
     let suffix = 2;
-    while (await BarberProfile.exists({ slug: candidate, ...(ignoreId ? { _id: { $ne: ignoreId } } : {}) })) candidate = `${base}-${suffix++}`;
+    while (true) {
+        let query = BarberProfile.exists({ slug: candidate, ...(ignoreId ? { _id: { $ne: ignoreId } } : {}) });
+        if (options.session) query = query.session(options.session);
+        if (!await query) break;
+        candidate = `${base}-${suffix++}`;
+    }
     return candidate;
 }
 
-async function createDefaultProfile(owner, name, requestedSlug) {
-    return BarberProfile.create({
-        owner, businessName: name, slug: await uniqueSlug(requestedSlug || name), businessHours: defaultHours,
+async function createDefaultProfile(owner, name, requestedSlug, options = {}) {
+    const data = {
+        owner, businessName: name, slug: await uniqueSlug(requestedSlug || name, null, options), businessHours: defaultHours,
         services: [
             { name: 'Corte premium', description: 'Corte personalizado com acabamento.', duration: 45, price: 55 },
             { name: 'Barba completa', description: 'Toalha quente, desenho e finalização.', duration: 30, price: 40 },
@@ -30,7 +35,9 @@ async function createDefaultProfile(owner, name, requestedSlug) {
             { type: 'about', title: 'Mais que um corte', text: 'Um espaço pensado para você desacelerar, cuidar do visual e sair renovado.', visible: true },
             { type: 'services', title: 'Escolha sua experiência', text: 'Serviços assinados por quem entende de estilo.', visible: true }
         ] }
-    });
+    };
+    if (options.session) return (await BarberProfile.create([data], { session: options.session }))[0];
+    return BarberProfile.create(data);
 }
 
 module.exports = { defaultHours, slugify, uniqueSlug, createDefaultProfile };

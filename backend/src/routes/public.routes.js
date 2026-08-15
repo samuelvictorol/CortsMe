@@ -4,6 +4,7 @@ const { getRedis } = require('../config/redis.connection');
 const { optionalAuth } = require('../middlewares/corts-auth.middleware');
 const { availableSlots } = require('../services/appointment.service');
 const { asyncRoute } = require('./route.helpers');
+const { getSubscriptionSummary, lockedBotPayload } = require('../services/billing.service');
 
 router.get('/barbers/:slug', asyncRoute(async (req, res) => {
     const cacheKey = `cortsme:public:${req.params.slug}`;
@@ -11,7 +12,8 @@ router.get('/barbers/:slug', asyncRoute(async (req, res) => {
     if (cached) return res.json(JSON.parse(cached));
     const profile = await BarberProfile.findOne({ slug: req.params.slug, active: true, published: true }).lean();
     if (!profile) return res.status(404).json({ message: 'Este site não está publicado.' });
-    const result = { profile };
+    const billing = await getSubscriptionSummary(profile._id, { notify: true });
+    const result = { profile, billing, plan: billing.plan, entitlements: billing.entitlements };
     await getRedis()?.set(cacheKey, JSON.stringify(result), 'EX', 120);
     res.json(result);
 }));
@@ -29,6 +31,15 @@ router.post('/barbers/:slug/bot', optionalAuth, asyncRoute(async (req, res) => {
     if (!profile || !profile.bot.enabled) return res.status(404).json({ message: 'Assistente indisponível.' });
     const message = String(req.body.message || '').trim().slice(0, 600);
     if (!message) return res.status(400).json({ message: 'Escreva uma mensagem.' });
+    const billing = await getSubscriptionSummary(profile._id, { notify: true });
+    if (!billing.entitlements.chatbot) {
+        const locked = lockedBotPayload(billing);
+        await BotLog.create({
+            profile: profile._id, user: req.auth?.userId || null, sessionId: req.body.sessionId,
+            message, response: locked.answer, intent: 'billing_locked'
+        });
+        return res.status(402).json(locked);
+    }
     const normalized = message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
     let intent = 'question';
     let answer = `Eu sou o assistente exclusivo da ${profile.businessName}. ${profile.bot.relevantInfo || 'Posso ajudar com serviços, horários, localização e agendamento.'}`;

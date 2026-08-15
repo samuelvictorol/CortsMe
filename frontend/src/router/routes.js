@@ -20,6 +20,7 @@ const routes = [
       { path: 'clientes', component: () => import('pages/barber/CustomersPage.vue') },
       { path: 'meu-site', component: () => import('pages/barber/SiteBuilderPage.vue') },
       { path: 'bot', component: () => import('pages/barber/BotPage.vue') },
+      { path: 'financeiro', component: () => import('pages/barber/FinancePage.vue') },
       { path: 'configuracoes', component: () => import('pages/barber/SettingsPage.vue') }
     ]
   },
@@ -29,6 +30,7 @@ const routes = [
     meta: { roles: ['ADMIN'] },
     children: [
       { path: '', component: () => import('pages/admin/AdminDashboard.vue') },
+      { path: 'financeiro', component: () => import('pages/admin/AdminFinancePage.vue') },
       { path: ':resource', component: () => import('pages/admin/AdminDataPage.vue') }
     ]
   },

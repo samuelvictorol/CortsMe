@@ -17,6 +17,10 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('cortsme_token', token)
       localStorage.setItem('cortsme_user', JSON.stringify(user))
     },
+    updateUser (user) {
+      this.user = user
+      localStorage.setItem('cortsme_user', JSON.stringify(user))
+    },
     async login (payload) {
       const { data } = await api.post('/auth/login', payload)
       this.setSession(data)
@@ -24,6 +28,11 @@ export const useAuthStore = defineStore('auth', {
     },
     async register (payload) {
       const { data } = await api.post('/auth/register', payload)
+      this.setSession(data)
+      return data
+    },
+    async registerProfessional (payload) {
+      const { data } = await api.post('/auth/register-professional', payload)
       this.setSession(data)
       return data
     },

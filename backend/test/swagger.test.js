@@ -10,6 +10,7 @@ test('gera uma especificação OpenAPI com todos os endpoints', () => {
         '/auth/login',
         '/auth/me',
         '/auth/register',
+        '/auth/register-professional',
         '/product/create',
         '/product/delete/{id}',
         '/product/search',

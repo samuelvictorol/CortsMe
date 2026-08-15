@@ -8,6 +8,7 @@ const { createUser, findByIdentity, userView, updateUser } = require('../service
 const { lookupHash, normalizeEmail, encryptText } = require('../services/security.service');
 const { requireAuth } = require('../middlewares/corts-auth.middleware');
 const { asyncRoute } = require('./route.helpers');
+const { registerProfessional } = require('../services/professional-registration.service');
 const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024 }, fileFilter: (req, file, callback) => callback(file.mimetype.startsWith('image/') ? null : new Error('Envie apenas imagens.'), file.mimetype.startsWith('image/')) });
 
 function session(user) {
@@ -20,6 +21,47 @@ function session(user) {
 router.post('/register', asyncRoute(async (req, res) => {
     const user = await createUser(req.body, 'USER');
     res.status(201).json(session(user));
+}));
+
+/**
+ * @openapi
+ * /auth/register-professional:
+ *   post:
+ *     tags: [Autenticação]
+ *     summary: Cria uma conta profissional com perfil e plano gratuito
+ *     description: O papel é sempre BARBER, independentemente de qualquer role enviado pelo cliente.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name, password, businessName]
+ *             anyOf:
+ *               - required: [email]
+ *               - required: [phone]
+ *             properties:
+ *               name: { type: string, example: Samuel Silva }
+ *               email: { type: string, format: email, example: samuel@example.com }
+ *               phone: { type: string, example: "(11) 99999-9999" }
+ *               password: { type: string, format: password, minLength: 8 }
+ *               businessName: { type: string, maxLength: 120, example: Barbearia Samuel }
+ *               slug: { type: string, example: barbearia-samuel }
+ *     responses:
+ *       201:
+ *         description: Conta profissional, perfil e assinatura gratuita criados.
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       409:
+ *         description: E-mail ou telefone já cadastrado.
+ */
+router.post('/register-professional', asyncRoute(async (req, res) => {
+    const professional = await registerProfessional(req.body);
+    res.status(201).json({
+        ...session(professional.user),
+        profile: professional.profile,
+        billing: professional.billing
+    });
 }));
 
 router.post('/login', asyncRoute(async (req, res) => {
@@ -36,11 +78,18 @@ router.post('/login', asyncRoute(async (req, res) => {
 
 router.post('/google', asyncRoute(async (req, res) => {
     if (!process.env.GOOGLE_CLIENT_ID) throw Object.assign(new Error('Login Google ainda não foi configurado.'), { statusCode: 503 });
+    const professionalAccess = req.body.accountType === 'professional';
     const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
     const ticket = await client.verifyIdToken({ idToken: req.body.credential, audience: process.env.GOOGLE_CLIENT_ID });
     const payload = ticket.getPayload();
     const email = normalizeEmail(payload.email);
     let user = await User.findOne({ emailHash: lookupHash(email) });
+    if (!user && professionalAccess) {
+        throw Object.assign(new Error('Crie primeiro seu espaço profissional pelo formulário. Depois você poderá entrar com o Google.'), { statusCode: 409, code: 'PROFESSIONAL_GOOGLE_REGISTRATION_REQUIRED' });
+    }
+    if (user && professionalAccess && !['BARBER', 'ADMIN'].includes(user.role)) {
+        throw Object.assign(new Error('Este Google está vinculado a uma conta de cliente. Use uma conta profissional.'), { statusCode: 403, code: 'PROFESSIONAL_ACCOUNT_REQUIRED' });
+    }
     if (!user) {
         user = await User.create({ name: payload.name, emailEncrypted: encryptText(email), emailHash: lookupHash(email), avatar: payload.picture, provider: 'google', role: 'USER' });
     } else if (!user.avatar && payload.picture) {

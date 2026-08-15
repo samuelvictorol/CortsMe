@@ -20,7 +20,7 @@ async function findByIdentity(identity, withPassword = false) {
     return withPassword ? query.select('+password') : query;
 }
 
-async function createUser(payload, role = 'USER') {
+async function createUser(payload, role = 'USER', options = {}) {
     const email = normalizeEmail(payload.email);
     const phone = normalizePhone(payload.phone);
     if (!payload.name?.trim()) throw Object.assign(new Error('Informe seu nome.'), { statusCode: 400 });
@@ -28,13 +28,15 @@ async function createUser(payload, role = 'USER') {
     if (!payload.password || payload.password.length < 8) throw Object.assign(new Error('A senha deve ter ao menos 8 caracteres.'), { statusCode: 400 });
     if (email && await User.exists({ emailHash: lookupHash(email) })) throw Object.assign(new Error('E-mail já cadastrado.'), { statusCode: 409 });
     if (phone && await User.exists({ phoneHash: lookupHash(phone) })) throw Object.assign(new Error('Telefone já cadastrado.'), { statusCode: 409 });
-    return User.create({
+    const data = {
         name: payload.name.trim(), emailEncrypted: encryptText(email),
         emailHash: email ? lookupHash(email) : undefined,
         phoneEncrypted: encryptText(phone), phoneHash: phone ? lookupHash(phone) : undefined,
         password: await bcrypt.hash(payload.password, 12), avatar: payload.avatar || '',
         role, provider: payload.provider || 'local'
-    });
+    };
+    if (options.session) return (await User.create([data], { session: options.session }))[0];
+    return User.create(data);
 }
 
 async function updateUser(user, payload) {

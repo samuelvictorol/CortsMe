@@ -2,6 +2,7 @@ const { User, BarberProfile } = require('../collections/CortsmeModels');
 const { createUser } = require('./user.service');
 const { createDefaultProfile } = require('./profile.service');
 const { lookupHash, normalizeEmail } = require('./security.service');
+const { ensureBillingSeed } = require('./billing.service');
 
 const SHOWCASE_VERSION = 3;
 
@@ -94,11 +95,15 @@ async function ensureSystemData() {
     const demoEmail = 'barber@corts.me';
     let barber = await User.findOne({ emailHash: lookupHash(demoEmail) });
     if (!barber && process.env.SEED_DEMO !== 'false') barber = await createUser({ name: 'Rafael Martins', email: demoEmail, phone: '11999990000', password: 'Barber@123' }, 'BARBER');
-    if (!barber) return;
+    if (!barber) {
+        await ensureBillingSeed();
+        return;
+    }
 
     let profile = await BarberProfile.findOne({ owner: barber._id });
     if (!profile) profile = await createDefaultProfile(barber._id, 'Barbearia Premium', 'barbearia-premium');
     await enhanceDemoProfile(profile);
+    await ensureBillingSeed(profile);
 }
 
 module.exports = { ensureSystemData, enhanceDemoProfile };
