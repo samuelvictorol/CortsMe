@@ -48,12 +48,13 @@
               <template #prepend><q-icon name="lock_outline" /></template>
               <template #append><q-icon :name="showPassword ? 'visibility_off' : 'visibility'" class="cursor-pointer" @click="showPassword = !showPassword" /></template>
             </q-input>
+            <router-link class="quick-login-forgot" to="/esqueci-senha?perfil=cliente">Esqueci minha senha</router-link>
             <q-btn type="submit" rounded unelevated color="dark" size="lg" class="full-width" no-caps label="Entrar e continuar" icon-right="arrow_forward" :loading="loginLoading" />
             <div class="quick-login-separator"><span>ou</span></div>
             <p class="quick-login-register">Ainda não tem conta? <router-link :to="{ path: '/cadastro', query: { redirect: route.fullPath } }">Criar conta gratuitamente</router-link></p>
           </q-card-section>
         </q-form>
-        <q-card-section class="quick-login-footer"><q-icon name="shield" /><span>Login seguro. Sua sessão fica ativa por até 90 dias.</span></q-card-section>
+        <q-card-section class="quick-login-footer"><q-icon name="shield" /><span>Login seguro. Seus dados de acesso ficam salvos por até 120 dias.</span></q-card-section>
       </q-card>
     </q-dialog>
   </q-page>
@@ -142,4 +143,5 @@ onMounted(async () => {
 
 <style scoped>
 .summary-label-row{display:flex;align-items:center;justify-content:space-between;gap:8px}.summary-label-row>span:first-child{font-size:9px;font-weight:800;letter-spacing:1.5px;color:#858c87}.public-plan-pill{max-width:140px;padding:5px 8px;overflow:hidden;border-radius:999px;background:#e7f4da;color:#426628;font-size:7px;font-weight:800;letter-spacing:.7px;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}.public-plan-pill.blocked{background:#f0e6dc;color:#755435}.booking-plan-lock{display:flex;align-items:flex-start;gap:10px;margin-top:14px;padding:13px;border:1px solid #ead8c4;border-radius:13px;background:#fff8ed;color:#563f29}.booking-plan-lock>.q-icon{flex:0 0 auto;width:31px;height:31px;display:grid;place-items:center;border-radius:9px;background:#f2dfc6;font-size:17px}.booking-plan-lock b,.booking-plan-lock small{display:block}.booking-plan-lock b{font-size:10px}.booking-plan-lock small{margin-top:3px;color:#7e6b58;font-size:8px;line-height:1.45}.booking-confirm-btn--locked{background:#6b6e6b!important;color:#fff!important}.booking-confirm-btn--locked :deep(.q-icon){color:#dbe8cf}@media(max-width:600px){.summary-label-row{align-items:flex-start;flex-direction:column}.public-plan-pill{max-width:100%}.booking-plan-lock{padding:11px}.booking-confirm-btn--locked{font-size:11px}}
+.quick-login-forgot{align-self:flex-end;margin-top:-6px;color:#38423b;font-size:9px;font-weight:800}
 </style>

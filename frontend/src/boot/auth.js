@@ -5,6 +5,10 @@ export default defineBoot((bootContext) => {
   const router = bootContext.router
   const auth = useAuthStore()
   auth.refresh()
+  window.addEventListener('cortsme:session-expired', () => {
+    auth.logout()
+    if (router.currentRoute.value.meta.public !== true) router.push('/login')
+  })
 
   router.beforeEach((to) => {
     if (to.meta.public) return true

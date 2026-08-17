@@ -7,7 +7,11 @@ const routes = [
     children: [
       { path: '', component: () => import('pages/LandingPage.vue'), meta: publicMeta },
       { path: 'login', component: () => import('pages/AuthPage.vue'), meta: publicMeta },
-      { path: 'cadastro', component: () => import('pages/AuthPage.vue'), meta: publicMeta }
+      { path: 'cadastro', component: () => import('pages/AuthPage.vue'), meta: publicMeta },
+      { path: 'esqueci-senha', component: () => import('pages/ForgotPasswordPage.vue'), meta: publicMeta },
+      { path: 'redefinir-senha/:token', component: () => import('pages/ResetPasswordPage.vue'), meta: publicMeta },
+      { path: 'agendamento/:token', component: () => import('pages/public/AppointmentActionPage.vue'), meta: publicMeta },
+      { path: 'financeiro/:token', component: () => import('pages/public/PublicFinancePage.vue'), meta: publicMeta }
     ]
   },
   {
@@ -31,6 +35,7 @@ const routes = [
     children: [
       { path: '', component: () => import('pages/admin/AdminDashboard.vue') },
       { path: 'financeiro', component: () => import('pages/admin/AdminFinancePage.vue') },
+      { path: 'notifyflow', component: () => import('pages/admin/AdminNotifyFlowPage.vue') },
       { path: ':resource', component: () => import('pages/admin/AdminDataPage.vue') }
     ]
   },

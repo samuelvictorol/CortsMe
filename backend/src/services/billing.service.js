@@ -10,7 +10,6 @@ const { userView } = require('./user.service');
 const INFINITEPAY_LINKS_URL = 'https://api.checkout.infinitepay.io/links';
 const INFINITEPAY_CHECK_URL = 'https://api.checkout.infinitepay.io/payment_check';
 const BILLING_WEBHOOK_PATH = '/api/billing/infinitepay/webhook';
-const DEFAULT_NGROK_WEBHOOK_BASE = 'https://e35a-2804-7f3-ff03-c6e9-816e-a277-318c-8040.ngrok-free.app';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function httpError(message, statusCode = 400, code = 'BILLING_ERROR', details) {
@@ -126,8 +125,10 @@ function normalizePlanPayload(payload, existing = null) {
 }
 
 async function getBillingSettings() {
-    const webhookEnv = process.env.INFINITEPAY_WEBHOOK_URL || DEFAULT_NGROK_WEBHOOK_BASE;
-    const webhookUrl = webhookEnv ? completeWebhookUrl(webhookEnv) : '';
+    const webhookEnv = String(process.env.INFINITEPAY_WEBHOOK_URL || '').trim();
+    const publicApiUrl = String(process.env.API_PUBLIC_URL || '').trim();
+    const webhookSource = webhookEnv || (/^https:\/\//i.test(publicApiUrl) ? publicApiUrl : '');
+    const webhookUrl = webhookSource ? completeWebhookUrl(webhookSource) : '';
     const redirectBaseUrl = process.env.CHECKOUT_REDIRECT_URL
         || String(process.env.CORS_ORIGIN || '').split(',')[0].trim();
     return BillingSettings.findOneAndUpdate(
@@ -138,7 +139,7 @@ async function getBillingSettings() {
                 webhookUrl, redirectBaseUrl, enabled: true
             }
         },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
+        { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
     );
 }
 
@@ -286,14 +287,20 @@ async function getSubscriptionSummary(profileId, { persist = true, notify = fals
 
 async function invalidateProfileCache(profileId) {
     const profile = await BarberProfile.findById(profileId).select('slug').lean();
-    if (profile?.slug) await getRedis()?.del(`cortsme:public:${profile.slug}`);
+    if (profile?.slug) await Promise.all([
+        getRedis()?.del(`cortsme:public:${profile.slug}`),
+        getRedis()?.del(`cortsme:public:v2:${profile.slug}`)
+    ]);
     return profile;
 }
 
 async function notifyBillingChanged(profileId, event = 'updated', suppliedSummary = null) {
     const profile = await BarberProfile.findById(profileId).select('owner slug').lean();
     if (!profile) return;
-    if (profile.slug) await getRedis()?.del(`cortsme:public:${profile.slug}`);
+    if (profile.slug) await Promise.all([
+        getRedis()?.del(`cortsme:public:${profile.slug}`),
+        getRedis()?.del(`cortsme:public:v2:${profile.slug}`)
+    ]);
     const summary = suppliedSummary || await getSubscriptionSummary(profileId, { persist: false });
     const payload = { event, billing: summary };
     const io = global.cortsmeIo;
@@ -403,11 +410,24 @@ function paymentEventKey(provider, transactionNsu, orderNsu) {
     return `${String(provider || 'INFINITEPAY').toUpperCase()}:${String(transactionNsu).trim()}:${String(orderNsu).trim()}`;
 }
 
+async function queueBillingReminders(profileId, periodEnd) {
+    if (!periodEnd) return;
+    try {
+        await require('./notification.service').scheduleBillingReminders(profileId, periodEnd);
+    } catch (error) {
+        // A confirmação financeira é a fonte de verdade. O reconciliador BullMQ
+        // recupera o agendamento caso a fila esteja reiniciando neste instante.
+        console.warn(`Billing reminders could not be queued: ${error.message}`);
+    }
+}
+
 async function activatePaidSubscription(payment) {
     let subscription = await Subscription.findById(payment.subscription).populate('plan');
     if (!subscription) throw httpError('Assinatura do pagamento não encontrada.', 400, 'BILLING_SUBSCRIPTION_NOT_FOUND');
     if (String(subscription.lastPayment || '') === String(payment._id)) {
-        return getSubscriptionSummary(subscription.profile, { persist: false });
+        const summary = await getSubscriptionSummary(subscription.profile, { persist: false });
+        await queueBillingReminders(subscription.profile, summary.periodEnd);
+        return summary;
     }
     const plan = await BillingPlan.findById(payment.plan);
     if (!plan) throw httpError('Plano do pagamento não encontrado.', 400, 'BILLING_PLAN_NOT_FOUND');
@@ -427,6 +447,7 @@ async function activatePaidSubscription(payment) {
     subscription = await Subscription.findById(subscription._id).populate('plan');
     const summary = calculateSubscriptionState(subscription, subscription.plan);
     await notifyBillingChanged(subscription.profile, 'payment_confirmed', summary);
+    await queueBillingReminders(subscription.profile, subscription.periodEnd);
     return summary;
 }
 
@@ -549,6 +570,9 @@ async function adjustSubscription(subscriptionId, payload, adminId) {
     await subscription.save();
     const summary = await getSubscriptionSummary(subscription.profile);
     await notifyBillingChanged(subscription.profile, 'admin_adjusted', summary);
+    if (summary.status === 'ACTIVE' && summary.periodEnd) {
+        await queueBillingReminders(subscription.profile, summary.periodEnd);
+    }
     return summary;
 }
 

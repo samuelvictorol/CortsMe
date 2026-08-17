@@ -149,7 +149,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { api } from 'boot/axios'
@@ -365,10 +365,12 @@ async function verifyReturn () {
 }
 
 onMounted(async () => {
+  window.addEventListener('cortsme:billing-changed', loadBilling)
   await loadBilling()
   if (returnReference.value) await verifyReturn()
   await consumeOnboardingCheckout()
 })
+onBeforeUnmount(() => window.removeEventListener('cortsme:billing-changed', loadBilling))
 </script>
 
 <style scoped>

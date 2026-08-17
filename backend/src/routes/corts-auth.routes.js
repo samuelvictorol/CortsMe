@@ -2,18 +2,20 @@ const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const { OAuth2Client } = require('google-auth-library');
-const { User, Media } = require('../collections/CortsmeModels');
+const { User, Media, SecureLink } = require('../collections/CortsmeModels');
 const { createUser, findByIdentity, userView, updateUser } = require('../services/user.service');
-const { lookupHash, normalizeEmail, encryptText } = require('../services/security.service');
 const { requireAuth } = require('../middlewares/corts-auth.middleware');
 const { asyncRoute } = require('./route.helpers');
 const { registerProfessional } = require('../services/professional-registration.service');
+const { createSecureLink, verifySecureLink, consumeSecureLink } = require('../services/secure-link.service');
+const { enqueuePasswordReset } = require('../services/notification.service');
+const { disconnectUserSockets } = require('../realtime/socket');
+const { authenticateGoogle } = require('../services/google-auth.service');
 const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024 }, fileFilter: (req, file, callback) => callback(file.mimetype.startsWith('image/') ? null : new Error('Envie apenas imagens.'), file.mimetype.startsWith('image/')) });
 
 function session(user) {
     return {
-        token: jwt.sign({ role: user.role }, process.env.JWT_SECRET, { subject: String(user._id), expiresIn: process.env.JWT_EXPIRES_IN || '90d' }),
+        token: jwt.sign({ role: user.role, ver: Number(user.authVersion || 0) }, process.env.JWT_SECRET, { subject: String(user._id), expiresIn: process.env.JWT_EXPIRES_IN || '120d' }),
         user: userView(user)
     };
 }
@@ -66,7 +68,7 @@ router.post('/register-professional', asyncRoute(async (req, res) => {
 
 router.post('/login', asyncRoute(async (req, res) => {
     const identity = req.body.identity || req.body.email || req.body.phone;
-    if (typeof identity !== 'string' || typeof req.body.password !== 'string') {
+    if (typeof identity !== 'string' || typeof req.body.password !== 'string' || req.body.password.length > 128) {
         throw Object.assign(new Error('Informe e-mail ou telefone e senha.'), { statusCode: 400 });
     }
     const user = await findByIdentity(identity, true);
@@ -77,32 +79,81 @@ router.post('/login', asyncRoute(async (req, res) => {
 }));
 
 router.post('/google', asyncRoute(async (req, res) => {
-    if (!process.env.GOOGLE_CLIENT_ID) throw Object.assign(new Error('Login Google ainda não foi configurado.'), { statusCode: 503 });
-    const professionalAccess = req.body.accountType === 'professional';
-    const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-    const ticket = await client.verifyIdToken({ idToken: req.body.credential, audience: process.env.GOOGLE_CLIENT_ID });
-    const payload = ticket.getPayload();
-    const email = normalizeEmail(payload.email);
-    let user = await User.findOne({ emailHash: lookupHash(email) });
-    if (!user && professionalAccess) {
-        throw Object.assign(new Error('Crie primeiro seu espaço profissional pelo formulário. Depois você poderá entrar com o Google.'), { statusCode: 409, code: 'PROFESSIONAL_GOOGLE_REGISTRATION_REQUIRED' });
+    const result = await authenticateGoogle(req.body);
+    res.json({
+        ...session(result.user),
+        ...(result.profile ? { profile: result.profile } : {}),
+        ...(result.billing ? { billing: result.billing } : {})
+    });
+}));
+
+router.post('/forgot-password', asyncRoute(async (req, res) => {
+    const identity = typeof req.body?.identity === 'string' ? req.body.identity.trim() : '';
+    if (identity) {
+        const user = await findByIdentity(identity);
+        if (user?.active && user.provider !== 'google') {
+            try {
+                const secure = await createSecureLink({
+                    purpose: 'RESET_PASSWORD', userId: user._id,
+                    expiresInSeconds: 60 * 60, revokePrevious: true,
+                    metadata: { role: user.role }
+                });
+                await enqueuePasswordReset({
+                    user, token: secure.token,
+                    accountType: user.role === 'BARBER' ? 'professional' : 'client'
+                });
+            } catch (error) {
+                console.warn(`Password reset notification could not be queued: ${error.code || error.message}`);
+            }
+        }
     }
-    if (user && professionalAccess && !['BARBER', 'ADMIN'].includes(user.role)) {
-        throw Object.assign(new Error('Este Google está vinculado a uma conta de cliente. Use uma conta profissional.'), { statusCode: 403, code: 'PROFESSIONAL_ACCOUNT_REQUIRED' });
+    res.status(202).json({
+        accepted: true,
+        message: 'Se a conta existir e usar senha, você receberá as instruções de redefinição.'
+    });
+}));
+
+router.get('/reset-password/:token', asyncRoute(async (req, res) => {
+    const { record } = await verifySecureLink(req.params.token, 'RESET_PASSWORD');
+    const user = await User.findOne({ _id: record.user, active: true });
+    if (!user || user.provider === 'google') {
+        return res.status(410).json({ message: 'Este link é inválido ou expirou.', code: 'SECURE_LINK_INVALID' });
     }
-    if (!user) {
-        user = await User.create({ name: payload.name, emailEncrypted: encryptText(email), emailHash: lookupHash(email), avatar: payload.picture, provider: 'google', role: 'USER' });
-    } else if (!user.avatar && payload.picture) {
-        user.avatar = payload.picture;
-        await user.save();
+    res.json({
+        valid: true,
+        accountType: user.role === 'BARBER' ? 'professional' : 'client',
+        displayName: user.name
+    });
+}));
+
+router.post('/reset-password', asyncRoute(async (req, res) => {
+    const password = String(req.body?.password || '');
+    if (password.length < 8 || password.length > 128) {
+        return res.status(400).json({ message: 'A nova senha deve ter entre 8 e 128 caracteres.' });
     }
-    res.json(session(user));
+    const { record } = await verifySecureLink(req.body?.token, 'RESET_PASSWORD');
+    const user = await User.findOne({ _id: record.user, active: true }).select('+password');
+    if (!user || user.provider === 'google') {
+        return res.status(410).json({ message: 'Este link é inválido ou expirou.', code: 'SECURE_LINK_INVALID' });
+    }
+    await consumeSecureLink(record);
+    user.password = await bcrypt.hash(password, 12);
+    user.authVersion = Number(user.authVersion || 0) + 1;
+    user.passwordChangedAt = new Date();
+    await user.save();
+    await SecureLink.updateMany(
+        { _id: { $ne: record._id }, purpose: 'RESET_PASSWORD', user: user._id, consumedAt: null, revokedAt: null },
+        { $set: { revokedAt: new Date() } }
+    );
+    disconnectUserSockets(user._id);
+    res.json({ success: true, message: 'Senha redefinida. Entre novamente com sua nova senha.' });
 }));
 
 router.get('/me', requireAuth, asyncRoute(async (req, res) => res.json({ user: userView(req.user) })));
 router.patch('/me', requireAuth, asyncRoute(async (req, res) => {
+    const passwordChanged = Boolean(req.body?.password);
     await updateUser(req.user, req.body);
-    res.json({ user: userView(req.user) });
+    res.json(passwordChanged ? session(req.user) : { user: userView(req.user) });
 }));
 
 router.post('/avatar', requireAuth, avatarUpload.single('image'), asyncRoute(async (req, res) => {

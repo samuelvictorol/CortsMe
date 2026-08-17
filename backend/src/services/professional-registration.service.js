@@ -1,14 +1,15 @@
 const mongoose = require('mongoose');
 const { User, BarberProfile, Subscription } = require('../collections/CortsmeModels');
-const { createUser } = require('./user.service');
+const { createUser, createGoogleUser } = require('./user.service');
 const { createDefaultProfile, slugify } = require('./profile.service');
 const { ensureFreePlan, calculateSubscriptionState } = require('./billing.service');
+const { normalizePhone } = require('./security.service');
 
 function httpError(message, statusCode = 400, code = 'PROFESSIONAL_REGISTRATION_ERROR') {
     return Object.assign(new Error(message), { statusCode, code });
 }
 
-function normalizeProfessionalPayload(payload = {}) {
+function normalizeProfessionalPayload(payload = {}, options = {}) {
     const businessName = String(payload.businessName || '').trim();
     if (!businessName) {
         throw httpError('Informe o nome do salão ou da barbearia.', 400, 'BUSINESS_NAME_REQUIRED');
@@ -23,15 +24,25 @@ function normalizeProfessionalPayload(payload = {}) {
         throw httpError('Informe uma URL personalizada válida.', 400, 'INVALID_PROFESSIONAL_SLUG');
     }
 
+    const provider = options.provider === 'google' ? 'google' : 'local';
+    if (provider === 'google') {
+        const phone = normalizePhone(payload.phone);
+        if (phone.length < 10 || phone.length > 13) {
+            throw httpError('Informe um telefone profissional válido com DDD.', 400, 'PROFESSIONAL_PHONE_REQUIRED');
+        }
+    }
+
     return {
         user: {
             name: payload.name,
             email: payload.email,
             phone: payload.phone,
-            password: payload.password
+            password: payload.password,
+            avatar: payload.avatar
         },
         businessName,
-        requestedSlug
+        requestedSlug,
+        provider
     };
 }
 
@@ -57,6 +68,7 @@ function createProfessionalRegistrationService(dependencies = {}) {
         BarberProfile,
         Subscription,
         createUser,
+        createGoogleUser,
         createDefaultProfile,
         ensureFreePlan,
         calculateSubscriptionState,
@@ -67,7 +79,8 @@ function createProfessionalRegistrationService(dependencies = {}) {
 
     async function createRecords(normalized, freePlan, session = null) {
         const options = session ? { session } : {};
-        const user = await deps.createUser(normalized.user, 'BARBER', options);
+        const createAccount = normalized.provider === 'google' ? deps.createGoogleUser : deps.createUser;
+        const user = await createAccount(normalized.user, 'BARBER', options);
         const profile = await deps.createDefaultProfile(
             user._id,
             normalized.businessName,
@@ -85,7 +98,8 @@ function createProfessionalRegistrationService(dependencies = {}) {
         let user;
         let profile;
         try {
-            user = await deps.createUser(normalized.user, 'BARBER');
+            const createAccount = normalized.provider === 'google' ? deps.createGoogleUser : deps.createUser;
+            user = await createAccount(normalized.user, 'BARBER');
             profile = await deps.createDefaultProfile(
                 user._id,
                 normalized.businessName,
@@ -111,8 +125,8 @@ function createProfessionalRegistrationService(dependencies = {}) {
         }
     }
 
-    return async function registerProfessional(payload) {
-        const normalized = normalizeProfessionalPayload(payload);
+    return async function registerProfessional(payload, options = {}) {
+        const normalized = normalizeProfessionalPayload(payload, options);
         const freePlan = await deps.ensureFreePlan();
         let records;
 

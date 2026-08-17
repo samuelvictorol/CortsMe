@@ -1,5 +1,6 @@
 import { defineBoot } from '#q-app/wrappers'
 import axios from 'axios'
+import { clearStoredSession, storedAccessToken } from 'src/services/session-storage'
 
 // Be careful when using SSR for cross-request state pollution
 // due to creating a Singleton instance here;
@@ -10,15 +11,15 @@ import axios from 'axios'
 const api = axios.create({ baseURL: process.env.API_URL })
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('cortsme_token')
+  const token = storedAccessToken()
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
 
 api.interceptors.response.use((response) => response, (error) => {
   if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
-    localStorage.removeItem('cortsme_token')
-    localStorage.removeItem('cortsme_user')
+    clearStoredSession()
+    window.dispatchEvent(new CustomEvent('cortsme:session-expired'))
   }
   return Promise.reject(error)
 })

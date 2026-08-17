@@ -48,6 +48,20 @@ services:
       timeout: 4s
       retries: 12
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cortsme-notifications-worker
+    restart: unless-stopped
+    command: npm run worker
+    env_file: .env
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build:
       context: ./frontend

@@ -1,25 +1,36 @@
 import { defineStore } from 'pinia'
 import { api } from 'boot/axios'
+import {
+  clearStoredSession,
+  readStoredSession,
+  updateStoredUser,
+  writeStoredSession
+} from 'src/services/session-storage'
 
 export const useAuthStore = defineStore('auth', {
-  state: () => ({
-    token: localStorage.getItem('cortsme_token') || '',
-    user: JSON.parse(localStorage.getItem('cortsme_user') || 'null')
-  }),
+  state: () => {
+    const session = readStoredSession()
+    return {
+      token: session?.token || '',
+      user: session?.user || null,
+      expiresAt: session?.expiresAt || 0
+    }
+  },
   getters: {
-    isLogged: (state) => Boolean(state.token && state.user),
+    isLogged: (state) => Boolean(state.token && state.user && state.expiresAt > Date.now()),
     home: (state) => ({ ADMIN: '/adm', BARBER: '/barber', USER: '/user' }[state.user?.role] || '/')
   },
   actions: {
-    setSession ({ token, user }) {
-      this.token = token
-      this.user = user
-      localStorage.setItem('cortsme_token', token)
-      localStorage.setItem('cortsme_user', JSON.stringify(user))
+    setSession ({ token, user, expiresAt }) {
+      const session = writeStoredSession({ token, user, expiresAt })
+      this.token = session?.token || ''
+      this.user = session?.user || null
+      this.expiresAt = session?.expiresAt || 0
     },
     updateUser (user) {
       this.user = user
-      localStorage.setItem('cortsme_user', JSON.stringify(user))
+      const session = updateStoredUser(user)
+      this.expiresAt = session?.expiresAt || this.expiresAt
     },
     async login (payload) {
       const { data } = await api.post('/auth/login', payload)
@@ -37,18 +48,20 @@ export const useAuthStore = defineStore('auth', {
       return data
     },
     async refresh () {
-      if (!this.token) return
+      if (!this.isLogged) {
+        if (this.token || this.user) this.logout()
+        return
+      }
       try {
         const { data } = await api.get('/auth/me')
-        this.user = data.user
-        localStorage.setItem('cortsme_user', JSON.stringify(data.user))
+        this.updateUser(data.user)
       } catch { this.logout() }
     },
     logout () {
       this.token = ''
       this.user = null
-      localStorage.removeItem('cortsme_token')
-      localStorage.removeItem('cortsme_user')
+      this.expiresAt = 0
+      clearStoredSession()
     }
   }
 })

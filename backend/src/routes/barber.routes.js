@@ -14,6 +14,10 @@ const {
     getBillingSettings, settingsView, listPublicPlans, getSubscriptionSummary,
     createCheckout, verifyPaymentReturn
 } = require('../services/billing.service');
+const {
+    reminderSettings, scheduleAppointmentReminders, cancelAppointmentReminders, revokeAppointmentLinks
+} = require('../services/notification.service');
+const { normalizeWebhookUrl } = require('../services/webhook.service');
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -112,18 +116,41 @@ router.get('/profile', asyncRoute(async (req, res) => {
     res.json({ profile, billing: await getSubscriptionSummary(profile._id, { notify: true }) });
 }));
 
+router.get('/reminder-settings', asyncRoute(async (req, res) => {
+    const profile = await ownProfile(req.auth.userId);
+    res.json({ reminderSettings: reminderSettings(profile) });
+}));
+
+router.put('/reminder-settings', asyncRoute(async (req, res) => {
+    const profile = await ownProfile(req.auth.userId);
+    const current = reminderSettings(profile);
+    const proposed = reminderSettings({ reminderSettings: { ...current, ...(req.body || {}) } });
+    profile.reminderSettings = proposed;
+    await profile.save();
+    res.json({ reminderSettings: reminderSettings(profile) });
+}));
+
 router.put('/profile', asyncRoute(async (req, res) => {
     const profile = await ownProfile(req.auth.userId);
     const oldSlug = profile.slug;
-    const simpleFields = ['businessName', 'active', 'published', 'description', 'address', 'whatsapp', 'webhookUrl'];
+    const simpleFields = ['businessName', 'active', 'published', 'description', 'address', 'whatsapp'];
     simpleFields.forEach((field) => { if (req.body[field] !== undefined) profile[field] = req.body[field]; });
+    if (req.body.webhookUrl !== undefined) profile.webhookUrl = await normalizeWebhookUrl(req.body.webhookUrl);
     if (req.body.slug && req.body.slug !== profile.slug) profile.slug = await uniqueSlug(req.body.slug, profile._id);
     if (req.body.site?.locationMap) {
         req.body.site.locationMap.embedUrl = normalizeMapEmbed(req.body.site.locationMap.embedUrl);
     }
     ['services', 'businessHours', 'site', 'bot'].forEach((field) => { if (req.body[field] !== undefined) profile[field] = req.body[field]; });
+    if (req.body.reminderSettings !== undefined) {
+        profile.reminderSettings = reminderSettings({ reminderSettings: { ...reminderSettings(profile), ...req.body.reminderSettings } });
+    }
     await profile.save();
-    await Promise.all([getRedis()?.del(`cortsme:public:${oldSlug}`), getRedis()?.del(`cortsme:public:${profile.slug}`)]);
+    await Promise.all([
+        getRedis()?.del(`cortsme:public:${oldSlug}`),
+        getRedis()?.del(`cortsme:public:${profile.slug}`),
+        getRedis()?.del(`cortsme:public:v2:${oldSlug}`),
+        getRedis()?.del(`cortsme:public:v2:${profile.slug}`)
+    ]);
     res.json({ profile });
 }));
 
@@ -188,7 +215,13 @@ router.post('/appointments', asyncRoute(async (req, res) => {
     if (!service) return res.status(400).json({ message: 'Selecione um serviço.' });
     const { startDate, endDate } = await assertAvailable(profile, req.body.start, service.duration);
     let customer = null;
-    if (req.body.userId) customer = await User.findById(req.body.userId);
+    if (req.body.userId) {
+        customer = await User.findOne({ _id: req.body.userId, role: 'USER', active: true });
+        const knownCustomer = customer && await Appointment.exists({ profile: profile._id, user: customer._id });
+        if (!knownCustomer) {
+            return res.status(403).json({ message: 'Este cliente não pertence à carteira deste estabelecimento.' });
+        }
+    }
     const appointment = new Appointment({
         profile: profile._id, user: customer?._id || null, createdBy: req.auth.userId,
         customerName: req.body.customerName || customer?.name || 'Cliente balcão', customerPhone: req.body.customerPhone || '',
@@ -197,6 +230,7 @@ router.post('/appointments', asyncRoute(async (req, res) => {
     });
     markAppointmentCreated(appointment, req.auth.userId);
     await appointment.save();
+    await scheduleAppointmentReminders(appointment);
     await notifyAppointment(profile, appointment.toObject(), 'created');
     res.status(201).json({ appointment });
 }));
@@ -223,6 +257,11 @@ router.patch('/appointments/:id', asyncRoute(async (req, res) => {
     if (req.body.resolveAdjustment) appointment.adjustmentRequested = false;
     appendAppointmentHistory(appointment, before, req.auth.userId);
     await appointment.save();
+    if (appointment.status === 'CANCELLED') await cancelAppointmentReminders(profile._id, appointment._id);
+    else {
+        if (new Date(before.start).getTime() !== new Date(appointment.start).getTime()) await revokeAppointmentLinks(profile._id, appointment._id);
+        await scheduleAppointmentReminders(appointment);
+    }
     await notifyAppointment(profile, appointment.toObject(), 'updated');
     res.json({ appointment });
 }));
@@ -231,6 +270,7 @@ router.delete('/appointments/:id', asyncRoute(async (req, res) => {
     const profile = await ownProfile(req.auth.userId);
     const appointment = await Appointment.findOneAndDelete({ _id: req.params.id, profile: profile._id });
     if (!appointment) return res.status(404).json({ message: 'Agendamento não encontrado.' });
+    await cancelAppointmentReminders(profile._id, appointment._id);
     await notifyAppointment(profile, appointment.toObject(), 'deleted');
     res.status(204).end();
 }));

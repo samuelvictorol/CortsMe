@@ -1,5 +1,5 @@
-const axios = require('axios');
 const { Appointment } = require('../collections/CortsmeModels');
+const { postWebhook } = require('./webhook.service');
 
 function minutes(value) {
     const [hour, minute] = String(value).split(':').map(Number);
@@ -58,7 +58,7 @@ async function notifyAppointment(profile, appointment, event) {
         if (appointment.user) io.to(`user:${appointment.user}`).emit('appointment:changed', { event, appointment });
         io.to('admin').emit('appointment:changed', { event, appointment });
     }
-    if (profile.webhookUrl) axios.post(profile.webhookUrl, { event: `appointment.${event}`, data: appointment }, { timeout: 3500 }).catch(() => undefined);
+    if (profile.webhookUrl) postWebhook(profile.webhookUrl, { event: `appointment.${event}`, data: appointment }).catch(() => undefined);
 }
 
 module.exports = { assertAvailable, availableSlots, notifyAppointment };

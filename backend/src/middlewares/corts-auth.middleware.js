@@ -6,7 +6,10 @@ async function optionalAuth(req, res, next) {
         const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
         if (!token) return next();
         const payload = jwt.verify(token, process.env.JWT_SECRET);
-        req.auth = { userId: payload.sub, role: payload.role };
+        const user = await User.findById(payload.sub);
+        if (!user?.active || Number(payload.ver || 0) !== Number(user.authVersion || 0)) return next();
+        req.auth = { userId: String(user._id), role: user.role };
+        req.user = user;
         return next();
     } catch { return next(); }
 }
@@ -17,7 +20,9 @@ async function requireAuth(req, res, next) {
         if (!token) return res.status(401).json({ message: 'Faça login para continuar.' });
         const payload = jwt.verify(token, process.env.JWT_SECRET);
         const user = await User.findById(payload.sub);
-        if (!user?.active) return res.status(401).json({ message: 'Sessão inválida.' });
+        if (!user?.active || Number(payload.ver || 0) !== Number(user.authVersion || 0)) {
+            return res.status(401).json({ message: 'Sessão inválida.' });
+        }
         req.auth = { userId: String(user._id), role: user.role };
         req.user = user;
         next();

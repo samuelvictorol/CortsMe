@@ -59,7 +59,7 @@
 
     <q-footer class="mobile-nav lt-md text-dark">
       <q-tabs dense no-caps active-color="dark" indicator-color="transparent">
-        <q-route-tab v-for="item in menu.slice(0, 4)" :key="item.to" :to="item.to" :icon="item.icon" :label="item.short || item.label" exact />
+        <q-route-tab v-for="item in mobileMenu" :key="item.to" :to="item.to" :icon="item.icon" :label="item.short || item.label" exact />
       </q-tabs>
     </q-footer>
   </q-layout>
@@ -99,7 +99,8 @@ const menus = {
     { label: 'Barbearias', short: 'Barbearias', icon: 'storefront', to: '/adm/profiles' },
     { label: 'Agendamentos', short: 'Agenda', icon: 'event_note', to: '/adm/appointments' },
     { label: 'Interações do bot', icon: 'forum', to: '/adm/bot-logs' },
-    { label: 'Financeiro', short: 'Financeiro', icon: 'payments', to: '/adm/financeiro' }
+    { label: 'Financeiro', short: 'Financeiro', icon: 'payments', to: '/adm/financeiro' },
+    { label: 'NotifyFlow', short: 'NotifyFlow', icon: 'notifications_active', to: '/adm/notifyflow' }
   ],
   USER: [
     { label: 'Meus agendamentos', short: 'Agenda', icon: 'event_available', to: '/user' },
@@ -131,6 +132,13 @@ const billingAlert = computed(() => {
   return null
 })
 const menu = computed(() => (menus[auth.user?.role] || []).map((item) => item.to === '/barber/financeiro' && billingPlanName.value ? { ...item, badge: billingPlanName.value } : item))
+const mobileMenu = computed(() => {
+  if (auth.user?.role === 'ADMIN') {
+    const preferred = ['/adm', '/adm/appointments', '/adm/financeiro', '/adm/notifyflow']
+    return preferred.map(path => menu.value.find(item => item.to === path)).filter(Boolean)
+  }
+  return menu.value.slice(0, 4)
+})
 const activeItem = computed(() => menu.value.find((item) => item.to === route.path))
 const initials = computed(() => auth.user?.name?.split(' ').slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'CM')
 const roleLabel = computed(() => ({ ADMIN: 'Administrador', BARBER: 'Profissional', USER: 'Cliente' }[auth.user?.role]))
@@ -143,15 +151,22 @@ async function loadBilling () {
 onMounted(() => {
   loadBilling()
   if (!auth.token) return
-  socket = io(process.env.SOCKET_URL, { auth: { token: auth.token } })
-  socket.on('appointment:changed', () => {
+  socket = io(process.env.SOCKET_URL || window.location.origin, { auth: { token: auth.token } })
+  socket.on('appointment:changed', (payload) => {
     notification.value = true
+    window.dispatchEvent(new CustomEvent('cortsme:appointment-changed', { detail: payload }))
     $q.notify({ message: 'Sua agenda foi atualizada em tempo real.', color: 'dark', icon: 'event_available', position: 'top-right' })
   })
-  socket.on('billing:changed', () => {
+  socket.on('billing:changed', (payload) => {
     loadBilling()
     notification.value = true
+    window.dispatchEvent(new CustomEvent('cortsme:billing-changed', { detail: payload }))
     $q.notify({ message: 'A situação do seu plano foi atualizada.', color: 'dark', icon: 'payments', position: 'top-right' })
+  })
+  socket.on('notifyflow:activity', (payload) => {
+    if (auth.user?.role !== 'ADMIN') return
+    notification.value = true
+    window.dispatchEvent(new CustomEvent('cortsme:notifyflow-activity', { detail: payload }))
   })
 })
 onBeforeUnmount(() => socket?.disconnect())

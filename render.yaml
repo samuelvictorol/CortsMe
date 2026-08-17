@@ -1,0 +1,134 @@
+# Blueprint de produção do CortsMe. MongoDB, credenciais Google/InfinitePay e
+# o token do app CortsMe no NotifyFlow são solicitados durante o primeiro sync.
+envVarGroups:
+  - name: cortsme-shared
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATA_ENCRYPTION_KEY
+        generateValue: true
+      - key: LINK_SIGNING_SECRET
+        generateValue: true
+      - key: NOTIFYFLOW_BASE_URL
+        value: https://notify-flow.onrender.com
+      - key: CORTSME_PUBLIC_URL
+        value: https://cortsme.onrender.com
+      - key: TZ
+        value: America/Sao_Paulo
+
+services:
+  - type: web
+    name: cortsme
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerContext: ./frontend
+    dockerfilePath: ./frontend/Dockerfile
+    autoDeployTrigger: commit
+    healthCheckPath: /healthz
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: API_URL
+        value: /api
+      - key: SOCKET_URL
+        value: ""
+      - key: GOOGLE_CLIENT_ID
+        fromService:
+          name: cortsme-api
+          type: pserv
+          envVarKey: GOOGLE_CLIENT_ID
+      - key: API_UPSTREAM
+        fromService:
+          name: cortsme-api
+          type: pserv
+          property: hostport
+
+  - type: pserv
+    name: cortsme-api
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    autoDeployTrigger: commit
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - fromGroup: cortsme-shared
+      - key: CONNECTION_STRING
+        sync: false
+      - key: NOTIFYFLOW_APP_TOKEN
+        sync: false
+      - key: PORT
+        value: "3000"
+      - key: REDIS_URL
+        fromService:
+          name: cortsme-redis
+          type: keyvalue
+          property: connectionString
+      - key: REDIS_REQUIRED
+        value: "true"
+      - key: JWT_EXPIRES_IN
+        value: 120d
+      - key: CORS_ORIGIN
+        value: https://cortsme.onrender.com
+      - key: API_PUBLIC_URL
+        value: https://cortsme.onrender.com
+      - key: CHECKOUT_REDIRECT_URL
+        value: https://cortsme.onrender.com/barber/financeiro
+      - key: INFINITEPAY_WEBHOOK_URL
+        value: https://cortsme.onrender.com/api/billing/infinitepay/webhook
+      - key: INFINITEPAY_HANDLE
+        sync: false
+      - key: ALLOW_PAYMENT_SIMULATION
+        value: "false"
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: ADMIN_NAME
+        value: Administrador CortsMe
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SEED_DEMO
+        value: "false"
+
+  - type: worker
+    name: cortsme-notifications-worker
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    dockerCommand: npm run worker
+    autoDeployTrigger: commit
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - fromGroup: cortsme-shared
+      - key: CONNECTION_STRING
+        fromService:
+          name: cortsme-api
+          type: pserv
+          envVarKey: CONNECTION_STRING
+      - key: NOTIFYFLOW_APP_TOKEN
+        fromService:
+          name: cortsme-api
+          type: pserv
+          envVarKey: NOTIFYFLOW_APP_TOKEN
+      - key: REDIS_URL
+        fromService:
+          name: cortsme-redis
+          type: keyvalue
+          property: connectionString
+      - key: REDIS_REQUIRED
+        value: "true"
+
+  - type: keyvalue
+    name: cortsme-redis
+    plan: starter
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: noeviction

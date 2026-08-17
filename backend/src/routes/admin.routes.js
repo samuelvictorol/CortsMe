@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const {
     User, BarberProfile, Appointment, BotLog, Media,
-    BillingPlan, Subscription, BillingPayment
+    BillingPlan, Subscription, BillingPayment, NotificationDispatch
 } = require('../collections/CortsmeModels');
 const { requireAuth, allowRoles } = require('../middlewares/corts-auth.middleware');
 const { createUser, updateUser, userView, findByIdentity } = require('../services/user.service');
@@ -13,6 +13,8 @@ const {
     getBillingSettings, updateBillingSettings, settingsView, planView, normalizePlanPayload,
     ensureSubscription, calculateSubscriptionState, adjustSubscription, confirmPayment, notifyBillingChanged
 } = require('../services/billing.service');
+const { getActivity: getNotifyFlowActivity, getStatus: getNotifyFlowStatus } = require('../services/notifyflow.service');
+const { scheduleAppointmentReminders, cancelAppointmentReminders, revokeAppointmentLinks } = require('../services/notification.service');
 
 router.use(requireAuth, allowRoles('ADMIN'));
 
@@ -24,6 +26,32 @@ router.get('/dashboard', asyncRoute(async (req, res) => {
         BotLog.find().sort({ createdAt: -1 }).limit(6).populate('profile', 'businessName slug').lean()
     ]);
     res.json({ stats: { users, barbers, appointments, interactions }, recent });
+}));
+
+router.get('/notifyflow/activity', asyncRoute(async (req, res) => {
+    const result = await getNotifyFlowActivity(req.query);
+    res.json(result);
+}));
+
+router.get('/notifyflow/status', asyncRoute(async (req, res) => {
+    const [remote, localCounts, recentFailures] = await Promise.all([
+        getNotifyFlowStatus().catch((error) => ({
+            success: false,
+            connected: false,
+            error: error.message,
+            code: error.code || 'NOTIFYFLOW_UNAVAILABLE'
+        })),
+        NotificationDispatch.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+        NotificationDispatch.find({ status: 'FAILED' }).sort({ updatedAt: -1 }).limit(5)
+            .select('kind entityType entityId lastError updatedAt profile').lean()
+    ]);
+    res.json({
+        notifyFlow: remote,
+        local: {
+            counts: Object.fromEntries(localCounts.map((item) => [item._id, item.count])),
+            recentFailures
+        }
+    });
 }));
 
 function adminSubscriptionView(subscription) {
@@ -233,6 +261,7 @@ router.delete('/users/:id', asyncRoute(async (req, res) => {
         BotLog.deleteMany({ $or: [{ user: user._id }, { profile: { $in: profileIds } }] }),
         Media.deleteMany({ owner: user._id })
     ]);
+    global.cortsmeIo?.in(`user:${String(user._id)}`).disconnectSockets(true);
     res.status(204).end();
 }));
 
@@ -287,6 +316,11 @@ router.patch('/appointments/:id', asyncRoute(async (req, res) => {
     Object.assign(appointment, req.body);
     appendAppointmentHistory(appointment, before, req.auth.userId);
     await appointment.save();
+    if (appointment.status === 'CANCELLED') await cancelAppointmentReminders(appointment.profile, appointment._id);
+    else {
+        if (new Date(before.start).getTime() !== new Date(appointment.start).getTime()) await revokeAppointmentLinks(appointment.profile, appointment._id);
+        await scheduleAppointmentReminders(appointment);
+    }
     const profile = await BarberProfile.findById(appointment.profile);
     await notifyAppointment(profile, appointment.toObject(), 'updated');
     res.json({ appointment });
@@ -295,6 +329,7 @@ router.patch('/appointments/:id', asyncRoute(async (req, res) => {
 router.delete('/appointments/:id', asyncRoute(async (req, res) => {
     const appointment = await Appointment.findByIdAndDelete(req.params.id);
     if (!appointment) return res.status(404).json({ message: 'Agendamento não encontrado.' });
+    await cancelAppointmentReminders(appointment.profile, appointment._id);
     res.status(204).end();
 }));
 

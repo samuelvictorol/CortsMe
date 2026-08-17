@@ -5,8 +5,11 @@ const { assertAvailable, notifyAppointment } = require('../services/appointment.
 const { appendAppointmentHistory, markAppointmentCreated } = require('../services/appointment-history.service');
 const { asyncRoute, pageOptions, paged } = require('./route.helpers');
 const { assertOnlineBookingAllowed } = require('../services/billing.service');
+const { scheduleAppointmentReminders, cancelAppointmentReminders } = require('../services/notification.service');
 
-router.use(requireAuth, allowRoles('USER', 'BARBER', 'ADMIN'));
+// Profissionais e administradores possuem rotas próprias. Manter este router
+// exclusivo do cliente impede que um BARBER consulte ou altere outro tenant.
+router.use(requireAuth, allowRoles('USER'));
 
 router.get('/', asyncRoute(async (req, res) => {
     const { page, limit, skip } = pageOptions(req.query);
@@ -33,6 +36,7 @@ router.post('/', asyncRoute(async (req, res) => {
     });
     markAppointmentCreated(appointment, req.auth.userId);
     await appointment.save();
+    await scheduleAppointmentReminders(appointment);
     await notifyAppointment(profile, appointment.toObject(), 'created');
     res.status(201).json({ appointment });
 }));
@@ -51,6 +55,8 @@ router.patch('/:id', asyncRoute(async (req, res) => {
     }
     appendAppointmentHistory(appointment, before, req.auth.userId, appointment.adjustmentRequested && !before.adjustmentRequested ? 'ADJUSTMENT_REQUESTED' : undefined);
     await appointment.save();
+    if (appointment.status === 'CANCELLED') await cancelAppointmentReminders(appointment.profile, appointment._id);
+    else await scheduleAppointmentReminders(appointment);
     const profile = await BarberProfile.findById(appointment.profile);
     await notifyAppointment(profile, appointment.toObject(), 'updated');
     res.json({ appointment });

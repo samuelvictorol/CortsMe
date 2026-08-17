@@ -6,17 +6,14 @@ const mongoConn = require('./src/config/mongo.connection');
 const { connectRedis } = require('./src/config/redis.connection');
 const { configureSocket } = require('./src/realtime/socket');
 const { ensureSystemData } = require('./src/services/bootstrap.service');
-const { startBillingSweep, sweepExpiredSubscriptions } = require('./src/services/billing.service');
 
 async function startServer() {
     try {
         await mongoConn();
         await connectRedis();
         await ensureSystemData();
-        await sweepExpiredSubscriptions();
-        startBillingSweep();
         const server = http.createServer(app);
-        configureSocket(server);
+        await configureSocket(server);
         server.listen(process.env.PORT || 3000, '0.0.0.0', () => {
             console.log(`CortsMe API online: ${process.env.PORT || 3000}`);
         });

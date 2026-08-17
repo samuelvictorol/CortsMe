@@ -12,7 +12,9 @@ const userSchema = new Schema({
     avatar: { type: String, default: '' },
     role: { type: String, enum: ['ADMIN', 'BARBER', 'USER'], default: 'USER', index: true },
     provider: { type: String, enum: ['local', 'google'], default: 'local' },
-    active: { type: Boolean, default: true }
+    active: { type: Boolean, default: true },
+    authVersion: { type: Number, default: 0, min: 0 },
+    passwordChangedAt: { type: Date, default: null }
 }, { timestamps: true });
 
 const serviceSchema = new Schema({
@@ -92,6 +94,19 @@ const barberProfileSchema = new Schema({
         relevantInfo: { type: String, default: '' },
         menuOptions: { type: [String], default: ['Ver serviços', 'Consultar horários', 'Agendar agora', 'Localização'] },
         faqs: { type: [new Schema({ question: String, answer: String }, { _id: true })], default: [] }
+    },
+    reminderSettings: {
+        enabled: { type: Boolean, default: true },
+        channels: {
+            type: [String],
+            enum: ['email', 'whatsapp_cloud'],
+            default: ['email', 'whatsapp_cloud']
+        },
+        morningEnabled: { type: Boolean, default: true },
+        morningTime: { type: String, default: '07:00' },
+        timezone: { type: String, default: 'America/Sao_Paulo' },
+        customerRemindersEnabled: { type: Boolean, default: true },
+        billingRemindersEnabled: { type: Boolean, default: true }
     }
 }, { timestamps: true });
 
@@ -224,6 +239,66 @@ const billingEventSchema = new Schema({
     processedAt: { type: Date, default: null }
 }, { timestamps: true });
 
+const secureLinkSchema = new Schema({
+    tokenHash: { type: String, required: true, unique: true },
+    purpose: {
+        type: String,
+        enum: ['RESET_PASSWORD', 'APPOINTMENT_ACTION', 'FINANCE_ACCESS'],
+        required: true,
+        index: true
+    },
+    user: { type: Schema.Types.ObjectId, ref: 'CortsmeUser', default: null, index: true },
+    profile: { type: Schema.Types.ObjectId, ref: 'BarberProfile', default: null, index: true },
+    appointment: { type: Schema.Types.ObjectId, ref: 'Appointment', default: null, index: true },
+    expiresAt: { type: Date, required: true },
+    consumedAt: { type: Date, default: null },
+    revokedAt: { type: Date, default: null },
+    metadata: { type: Schema.Types.Mixed, default: null }
+}, { timestamps: true });
+secureLinkSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+secureLinkSchema.index({ purpose: 1, user: 1, consumedAt: 1 });
+secureLinkSchema.index(
+    { purpose: 1, user: 1 },
+    {
+        unique: true,
+        name: 'uniq_active_password_reset_per_user',
+        partialFilterExpression: { purpose: 'RESET_PASSWORD', consumedAt: null, revokedAt: null }
+    }
+);
+
+const notificationDispatchSchema = new Schema({
+    profile: { type: Schema.Types.ObjectId, ref: 'BarberProfile', default: null, index: true },
+    user: { type: Schema.Types.ObjectId, ref: 'CortsmeUser', default: null, index: true },
+    kind: {
+        type: String,
+        enum: ['PASSWORD_RESET', 'BARBER_DAILY', 'BARBER_BILLING', 'CUSTOMER_APPOINTMENT'],
+        required: true,
+        index: true
+    },
+    entityType: { type: String, required: true, index: true },
+    entityId: { type: String, required: true, index: true },
+    templateName: { type: String, required: true },
+    channels: { type: [String], default: [] },
+    idempotencyKey: { type: String, required: true, unique: true },
+    jobId: { type: String, default: '', index: true },
+    status: {
+        type: String,
+        enum: ['QUEUED', 'PROCESSING', 'SENT', 'FAILED', 'SKIPPED'],
+        default: 'QUEUED',
+        index: true
+    },
+    scheduledFor: { type: Date, default: null, index: true },
+    attempts: { type: Number, default: 0 },
+    notifyFlowId: { type: String, default: '', index: true },
+    recipientSummary: { type: String, default: '' },
+    responseStatus: { type: String, default: '' },
+    lastError: { type: String, default: '' },
+    sentAt: { type: Date, default: null },
+    metadata: { type: Schema.Types.Mixed, default: null }
+}, { timestamps: true });
+notificationDispatchSchema.index({ profile: 1, createdAt: -1 });
+notificationDispatchSchema.index({ status: 1, scheduledFor: 1 });
+
 const User = mongoose.models.CortsmeUser || mongoose.model('CortsmeUser', userSchema);
 const BarberProfile = mongoose.models.BarberProfile || mongoose.model('BarberProfile', barberProfileSchema);
 const Appointment = mongoose.models.Appointment || mongoose.model('Appointment', appointmentSchema);
@@ -234,8 +309,11 @@ const BillingPlan = mongoose.models.BillingPlan || mongoose.model('BillingPlan',
 const Subscription = mongoose.models.Subscription || mongoose.model('Subscription', subscriptionSchema);
 const BillingPayment = mongoose.models.BillingPayment || mongoose.model('BillingPayment', billingPaymentSchema);
 const BillingEvent = mongoose.models.BillingEvent || mongoose.model('BillingEvent', billingEventSchema);
+const SecureLink = mongoose.models.SecureLink || mongoose.model('SecureLink', secureLinkSchema);
+const NotificationDispatch = mongoose.models.NotificationDispatch || mongoose.model('NotificationDispatch', notificationDispatchSchema);
 
 module.exports = {
     User, BarberProfile, Appointment, BotLog, Media,
-    BillingSettings, BillingPlan, Subscription, BillingPayment, BillingEvent
+    BillingSettings, BillingPlan, Subscription, BillingPayment, BillingEvent,
+    SecureLink, NotificationDispatch
 };

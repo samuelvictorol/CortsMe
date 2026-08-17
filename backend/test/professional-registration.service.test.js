@@ -136,3 +136,48 @@ test('usa transação única quando a topologia Mongo oferece suporte', async ()
     assert.equal(result.billing.status, 'FREE');
     assert.deepEqual(events, ['transaction:start', 'transaction:commit', 'session:end']);
 });
+
+test('cadastro profissional Google exige telefone e usa criador sem senha', async () => {
+    assert.throws(
+        () => normalizeProfessionalPayload({ businessName: 'Google Barber' }, { provider: 'google' }),
+        (error) => error.statusCode === 400 && error.code === 'PROFESSIONAL_PHONE_REQUIRED'
+    );
+
+    const calls = [];
+    const service = createProfessionalRegistrationService({
+        connection: standaloneConnection(),
+        ensureFreePlan: async () => ({ _id: 'free-google', isFree: true }),
+        createUser: async () => { throw new Error('cadastro Google não deve usar senha'); },
+        createGoogleUser: async (payload, role) => {
+            calls.push(['google-user', payload.password, role, payload.phone]);
+            return { _id: 'google-barber', name: payload.name, role, provider: 'google' };
+        },
+        createDefaultProfile: async (owner, name, slug) => {
+            calls.push(['profile', owner, name, slug]);
+            return { _id: 'google-profile', businessName: name, slug, active: true };
+        },
+        Subscription: {
+            create: async (data) => {
+                calls.push(['subscription', data.profile, data.plan, data.status]);
+                return { _id: 'google-subscription', ...data };
+            },
+            deleteMany: async () => ({ deletedCount: 0 })
+        },
+        BarberProfile: { deleteOne: async () => ({ deletedCount: 0 }), deleteMany: async () => ({ deletedCount: 0 }) },
+        User: { deleteOne: async () => ({ deletedCount: 0 }) },
+        calculateSubscriptionState: () => ({ status: 'FREE' })
+    });
+
+    const result = await service({
+        name: 'Profissional Google', email: 'google@example.com', phone: '(11) 98888-7777',
+        businessName: 'Google Barber', slug: 'google-barber'
+    }, { provider: 'google' });
+
+    assert.equal(result.user.provider, 'google');
+    assert.equal(result.billing.status, 'FREE');
+    assert.deepEqual(calls, [
+        ['google-user', undefined, 'BARBER', '(11) 98888-7777'],
+        ['profile', 'google-barber', 'Google Barber', 'google-barber'],
+        ['subscription', 'google-profile', 'free-google', 'FREE']
+    ]);
+});

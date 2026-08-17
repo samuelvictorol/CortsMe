@@ -56,8 +56,8 @@ export default defineConfig((/* ctx */) => {
       // publicPath: '/',
       // analyze: true,
       env: {
-        API_URL: process.env.API_URL || 'http://localhost:3000/api',
-        SOCKET_URL: process.env.SOCKET_URL || 'http://localhost:3000',
+        API_URL: process.env.API_URL ?? 'http://localhost:3000/api',
+        SOCKET_URL: process.env.SOCKET_URL ?? 'http://localhost:3000',
         GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || ''
       },
       // rawDefine: {}

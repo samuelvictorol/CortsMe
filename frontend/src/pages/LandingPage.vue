@@ -159,13 +159,18 @@
               <q-form class="professional-form" @submit="submitProfessionalLogin">
                 <q-input v-model.trim="professionalLogin.identity" outlined rounded label="E-mail ou telefone" autocomplete="username"><template #prepend><q-icon name="alternate_email" /></template></q-input>
                 <q-input v-model="professionalLogin.password" outlined rounded :type="showLoginPassword ? 'text' : 'password'" label="Senha" autocomplete="current-password"><template #prepend><q-icon name="lock_outline" /></template><template #append><q-icon :name="showLoginPassword ? 'visibility_off' : 'visibility'" class="cursor-pointer" @click="showLoginPassword = !showLoginPassword" /></template></q-input>
+                <router-link class="professional-forgot-link" to="/esqueci-senha?perfil=profissional">Esqueci minha senha</router-link>
                 <q-btn type="submit" class="full-width" rounded unelevated color="dark" size="lg" no-caps label="Entrar e continuar" icon-right="arrow_forward" :loading="professionalLoading" />
+                <div class="professional-auth-divider"><span>ou</span></div>
+                <q-btn to="/login?perfil=profissional" class="full-width" rounded outline color="dark" no-caps label="Entrar com Google como profissional" icon="account_circle" />
               </q-form>
               <p class="professional-help">Seu cadastro é de cliente? <button type="button" @click="professionalTab = 'register'">Crie um perfil profissional.</button></p>
             </q-tab-panel>
 
             <q-tab-panel name="register">
               <div class="professional-form-heading"><span>COMECE AGORA</span><h2>Crie seu espaço profissional.</h2><p>Você configura site, horários e equipe depois, direto no painel.</p></div>
+              <q-btn :to="professionalGoogleRoute" class="full-width" rounded outline color="dark" size="lg" no-caps label="Criar com Google, sem senha" icon="account_circle" />
+              <div class="professional-auth-divider"><span>ou cadastre com e-mail</span></div>
               <q-form class="professional-form register-professional-form" @submit="submitProfessionalRegister">
                 <div class="professional-field-grid">
                   <q-input v-model.trim="professionalRegister.name" outlined rounded label="Seu nome *" autocomplete="name"><template #prepend><q-icon name="person_outline" /></template></q-input>
@@ -209,6 +214,13 @@ const showLoginPassword = ref(false)
 const showRegisterPassword = ref(false)
 const professionalLogin = reactive({ identity: '', password: '' })
 const professionalRegister = reactive({ name: '', businessName: '', email: '', phone: '', password: '', accepted: false })
+const professionalGoogleRoute = computed(() => ({
+  path: '/cadastro',
+  query: {
+    perfil: 'profissional',
+    ...(selectedPlan.value?.code ? { plano: selectedPlan.value.code } : {})
+  }
+}))
 const miniDates = [{ week: 'SEG', day: 12 }, { week: 'TER', day: 13 }, { week: 'QUA', day: 14, active: true }, { week: 'QUI', day: 15 }, { week: 'SEX', day: 16 }]
 const previewSlots = [
   { time: '09:00', name: 'Lucas Ferreira', service: 'Corte premium · 45 min', color: 'green' },
@@ -475,4 +487,5 @@ onMounted(loadPublicPlans)
 @media (max-width: 1180px) { .pricing-grid--4,.pricing-grid--5 { grid-template-columns: repeat(2, 1fr); }.pricing-card ul { min-height: 0; } }
 @media (max-width: 820px) { .pricing-section { padding: 85px 0 75px; }.pricing-heading { grid-template-columns: 1fr; gap: 27px; }.pricing-heading h2 { letter-spacing: -2.5px; }.pricing-grid,.pricing-grid--1,.pricing-grid--2,.pricing-grid--3,.pricing-grid--4,.pricing-grid--5 { grid-template-columns: 1fr; margin-top: 43px; }.pricing-card { padding: 26px 23px; }.pricing-card > p { min-height: 0; }.pricing-card ul { min-height: 0; }.pricing-footnote { align-items: flex-start; text-align: left; } }
 @media (max-width: 620px) { .professional-access-dialog { width: calc(100vw - 16px); max-height: 95vh; border-radius: 20px; }.professional-dialog__header { min-height: 65px; padding: 10px 10px 10px 16px; }.selected-plan-strip { min-height: 75px; padding: 12px 15px; grid-template-columns: 39px 1fr; }.selected-plan-strip__icon { width: 38px; height: 38px; }.selected-plan-strip .q-btn { display: none; }.professional-tabs { padding: 0 6px; }.professional-panels :deep(.q-tab-panel) { max-height: 65vh; padding: 21px 17px 24px; }.professional-field-grid { grid-template-columns: 1fr; gap: 13px; }.professional-form-heading h2 { font-size: 23px; }.wrong-profile-banner { margin: 12px 13px 0; }.active-professional-session { padding: 25px 18px 22px; } }
+.professional-forgot-link{justify-self:end;margin-top:-5px;color:#404a43;font-size:10px;font-weight:800}.professional-auth-divider{display:flex;align-items:center;gap:10px;color:#9aa19c;font-size:8px}.professional-auth-divider:before,.professional-auth-divider:after{height:1px;flex:1;background:#e2e5df;content:''}
 </style>
