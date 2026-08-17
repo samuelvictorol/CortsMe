@@ -4,11 +4,19 @@ const assert = require('node:assert/strict');
 const {
     normalizePhone, reminderSettings, localParts, localDayBounds
 } = require('../src/services/notification.service');
+const { normalizePhone: normalizeStoredPhone } = require('../src/services/security.service');
 
 test('normaliza WhatsApp brasileiro e rejeita destinatário inválido', () => {
     assert.equal(normalizePhone('(11) 99999-9999'), '+5511999999999');
     assert.equal(normalizePhone('+55 11 98888-7777'), '+5511988887777');
+    assert.equal(normalizePhone('(61) 98174-8795'), '+5561981748795');
+    assert.equal(normalizePhone('+556181748795'), '+556181748795');
     assert.equal(normalizePhone('123'), '');
+});
+
+test('preserva o nono dígito no cadastro e só acrescenta o país no payload', () => {
+    assert.equal(normalizeStoredPhone('(61) 98174-8795'), '61981748795');
+    assert.equal(normalizePhone(normalizeStoredPhone('(61) 98174-8795')), '+5561981748795');
 });
 
 test('normaliza preferências do barbeiro sem aceitar canais fora do contrato', () => {

@@ -5,7 +5,10 @@ const { assertAvailable, notifyAppointment } = require('../services/appointment.
 const { appendAppointmentHistory, markAppointmentCreated } = require('../services/appointment-history.service');
 const { asyncRoute, pageOptions, paged } = require('./route.helpers');
 const { assertOnlineBookingAllowed } = require('../services/billing.service');
-const { scheduleAppointmentReminders, cancelAppointmentReminders } = require('../services/notification.service');
+const {
+    scheduleAppointmentReminders, cancelAppointmentReminders,
+    enqueueBarberAppointmentCreated, enqueueBarberAppointmentCancelled
+} = require('../services/notification.service');
 
 // Profissionais e administradores possuem rotas próprias. Manter este router
 // exclusivo do cliente impede que um BARBER consulte ou altere outro tenant.
@@ -37,6 +40,7 @@ router.post('/', asyncRoute(async (req, res) => {
     markAppointmentCreated(appointment, req.auth.userId);
     await appointment.save();
     await scheduleAppointmentReminders(appointment);
+    await enqueueBarberAppointmentCreated(appointment, { changedBy: req.auth.userId });
     await notifyAppointment(profile, appointment.toObject(), 'created');
     res.status(201).json({ appointment });
 }));
@@ -55,7 +59,12 @@ router.patch('/:id', asyncRoute(async (req, res) => {
     }
     appendAppointmentHistory(appointment, before, req.auth.userId, appointment.adjustmentRequested && !before.adjustmentRequested ? 'ADJUSTMENT_REQUESTED' : undefined);
     await appointment.save();
-    if (appointment.status === 'CANCELLED') await cancelAppointmentReminders(appointment.profile, appointment._id);
+    if (appointment.status === 'CANCELLED') {
+        await cancelAppointmentReminders(appointment.profile, appointment._id);
+        if (before.status !== 'CANCELLED') {
+            await enqueueBarberAppointmentCancelled(appointment, { changedBy: req.auth.userId });
+        }
+    }
     else await scheduleAppointmentReminders(appointment);
     const profile = await BarberProfile.findById(appointment.profile);
     await notifyAppointment(profile, appointment.toObject(), 'updated');

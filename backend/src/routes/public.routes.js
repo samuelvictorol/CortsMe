@@ -10,7 +10,7 @@ const {
 const { verifySecureLink, consumeSecureLink } = require('../services/secure-link.service');
 const { appendAppointmentHistory } = require('../services/appointment-history.service');
 const { notifyAppointment } = require('../services/appointment.service');
-const { cancelAppointmentReminders } = require('../services/notification.service');
+const { cancelAppointmentReminders, enqueueBarberAppointmentCancelled } = require('../services/notification.service');
 
 function publicPayment(payment) {
     if (!payment) return null;
@@ -68,7 +68,10 @@ router.post('/appointment-actions/:token', asyncRoute(async (req, res) => {
     appointment.status = action === 'cancel' ? 'CANCELLED' : 'CONFIRMED';
     appendAppointmentHistory(appointment, before, record.user || null);
     await appointment.save();
-    if (appointment.status === 'CANCELLED') await cancelAppointmentReminders(appointment.profile, appointment._id);
+    if (appointment.status === 'CANCELLED') {
+        await cancelAppointmentReminders(appointment.profile, appointment._id);
+        await enqueueBarberAppointmentCancelled(appointment, { changedBy: record.user || null });
+    }
     const profile = await BarberProfile.findById(appointment.profile);
     await notifyAppointment(profile, appointment.toObject(), 'updated');
     res.json({ success: true, status: appointment.status, message: action === 'cancel' ? 'Agendamento cancelado.' : 'Agendamento confirmado.' });

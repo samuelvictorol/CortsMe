@@ -14,7 +14,8 @@ test('onboarding profissional diferencia Google sem senha do cadastro tradiciona
 
   assert.match(authPage, /Forma de cadastro profissional/)
   assert.match(authPage, /Continuar com Google[\s\S]*Sem criar uma nova senha/)
-  assert.match(authPage, /googleProfessionalRegistration[\s\S]*businessName: form\.businessName[\s\S]*phone: form\.phone/)
+  assert.match(authPage, /registerMode\.value && form\.phone \? \{ phone: form\.phone \}/)
+  assert.match(authPage, /googleProfessionalRegistration[\s\S]*businessName: form\.businessName/)
   assert.match(authPage, /accountType: isProfessional\.value \? 'professional' : 'client'/)
   assert.match(authPage, /v-if="!googleProfessionalRegistration"[\s\S]*v-model="form\.password"/)
   assert.match(landingPage, /professionalGoogleRoute[\s\S]*Criar com Google, sem senha/)

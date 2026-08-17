@@ -4,6 +4,7 @@ router.use('/auth', require('./corts-auth.routes'));
 router.use('/public', require('./public.routes'));
 router.use('/appointments', require('./appointment.routes'));
 router.use('/barber', require('./barber.routes'));
+router.use('/admin/users', require('./admin-avatar.routes'));
 router.use('/admin', require('./admin.routes'));
 router.use('/media', require('./media.routes'));
 router.use('/billing', require('./billing.routes'));

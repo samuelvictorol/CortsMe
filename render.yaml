@@ -84,9 +84,11 @@ services:
       - key: ALLOW_PAYMENT_SIMULATION
         value: "false"
       - key: GOOGLE_CLIENT_ID
-        sync: false
+        value: 869017434136-daqtti1aiad53re8sgpr7l54q1cnrc85.apps.googleusercontent.com
       - key: GOOGLE_CLIENT_SECRET
         sync: false
+      - key: GOOGLE_REDIRECT_URI
+        value: https://api.aitosoftwares.com/auth/google/callback
       - key: ADMIN_NAME
         value: Administrador CortsMe
       - key: ADMIN_EMAIL

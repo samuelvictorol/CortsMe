@@ -11,7 +11,9 @@ const TEMPLATES = {
     PASSWORD_RESET: 'CortsMeSystemEsqueciSenha',
     BARBER_DAILY: 'CortsMeBarberReminder',
     BARBER_BILLING: 'CortsMeBarberFinanceiro',
-    CUSTOMER_APPOINTMENT: 'CortsMeUserReminder'
+    CUSTOMER_APPOINTMENT: 'CortsMeUserReminder',
+    BARBER_APPOINTMENT_CREATED: 'CortsMeBarberAppointmentCreated',
+    BARBER_APPOINTMENT_CANCELLED: 'CortsMeBarberAppointmentCancelled'
 };
 const ALLOWED_CHANNELS = ['email', 'whatsapp_cloud'];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -115,11 +117,12 @@ function maskRecipient(recipient) {
 function recipientFromUser(user, { externalId, displayName, phone } = {}) {
     if (!user && !phone) return null;
     const contact = user ? userView(user) : {};
+    const whatsappPhone = normalizePhone(contact.whatsappMetaPhone || phone || contact.phone);
     return {
         externalId,
         displayName: displayName || contact.name || 'Cliente CortsMe',
         ...(contact.email ? { email: contact.email } : {}),
-        ...(normalizePhone(phone || contact.phone) ? { phone: normalizePhone(phone || contact.phone) } : {})
+        ...(whatsappPhone ? { phone: whatsappPhone } : {})
     };
 }
 
@@ -258,6 +261,80 @@ function appointmentIdempotency(profileId, appointmentId, expectedStart, offsetM
     return `cortsme:appointment:${profileId}:${appointmentId}:${new Date(expectedStart).getTime()}:${offsetMinutes}`;
 }
 
+function recipientFromBarberProfile(profile) {
+    if (!profile?.owner) return null;
+    const profileId = String(profile._id);
+    return recipientFromUser(profile.owner, {
+        externalId: `barber:${profileId}:${profile.owner._id}`
+    });
+}
+
+function appointmentEventTransitionId(appointment, event) {
+    const history = Array.from(appointment?.history || []);
+    if (event === 'created' && history.some((entry) => entry?.action === 'CREATED')) return 'created-1';
+    if (event === 'cancelled') {
+        let currentStatus = null;
+        let generation = 0;
+        for (const entry of history) {
+            const statusChange = Array.from(entry?.changes || []).find((change) => change.field === 'status');
+            if (!statusChange) continue;
+            if (currentStatus === null) currentStatus = statusChange.from || null;
+            if (statusChange.to === 'CANCELLED' && currentStatus !== 'CANCELLED') generation += 1;
+            currentStatus = statusChange.to || currentStatus;
+        }
+        // O ordinal colapsa duas requisições concorrentes que observaram a
+        // mesma origem CONFIRMED, mas avança após uma reabertura real.
+        if (generation > 0) return `cancel-${generation}`;
+    }
+    // Compatibilidade defensiva para registros legados sem histórico. Todos
+    // os fluxos atuais gravam a transição antes de enfileirar o evento.
+    return event === 'created' ? 'initial' : `legacy-${new Date(appointment?.updatedAt || appointment?.start || 0).getTime()}`;
+}
+
+function barberAppointmentEventIdempotency(event, profileId, appointmentId, transitionId) {
+    return `cortsme:barber-appointment-${event}:${profileId}:${appointmentId}:${transitionId}`;
+}
+
+async function enqueueBarberAppointmentEvent(appointment, event, options = {}) {
+    if (!['created', 'cancelled'].includes(event)) {
+        throw Object.assign(new Error('Evento de agendamento inválido.'), { code: 'APPOINTMENT_EVENT_INVALID' });
+    }
+    const profileId = String(appointment.profile?._id || appointment.profile || '');
+    const appointmentId = String(appointment._id || '');
+    if (!profileId || !appointmentId) {
+        throw Object.assign(new Error('Evento de agendamento sem tenant ou agendamento.'), { code: 'APPOINTMENT_EVENT_TENANT_REQUIRED' });
+    }
+    const kind = event === 'created' ? 'BARBER_APPOINTMENT_CREATED' : 'BARBER_APPOINTMENT_CANCELLED';
+    const jobName = event === 'created' ? 'barber-appointment-created' : 'barber-appointment-cancelled';
+    const transitionId = appointmentEventTransitionId(appointment, event);
+    return registerDispatch({
+        kind,
+        profileId,
+        entityType: 'appointment',
+        entityId: appointmentId,
+        idempotencyKey: barberAppointmentEventIdempotency(event, profileId, appointmentId, transitionId),
+        scheduledFor: new Date(),
+        jobName,
+        jobData: {
+            profileId,
+            appointmentId,
+            expectedStart: new Date(appointment.start).toISOString(),
+            transitionId,
+            ...(options.changedBy ? { changedBy: String(options.changedBy) } : {})
+        },
+        channels: ALLOWED_CHANNELS,
+        metadata: { event, transitionId, appointmentStart: new Date(appointment.start).toISOString() }
+    });
+}
+
+async function enqueueBarberAppointmentCreated(appointment, options) {
+    return enqueueBarberAppointmentEvent(appointment, 'created', options);
+}
+
+async function enqueueBarberAppointmentCancelled(appointment, options) {
+    return enqueueBarberAppointmentEvent(appointment, 'cancelled', options);
+}
+
 async function scheduleAppointmentReminders(appointment) {
     const profileId = String(appointment.profile?._id || appointment.profile);
     const appointmentId = String(appointment._id);
@@ -343,6 +420,48 @@ async function processAppointmentReminder(job, dispatch) {
     });
 }
 
+async function processBarberAppointmentEvent(job, dispatch, event) {
+    const { profileId, appointmentId, expectedStart } = job.data;
+    const [appointment, profile] = await Promise.all([
+        Appointment.findOne({ _id: appointmentId, profile: profileId }).populate('user'),
+        BarberProfile.findOne({ _id: profileId }).populate('owner')
+    ]);
+    if (!appointment || !profile?.active || !profile.owner?.active) {
+        return skipDispatch(dispatch, 'Agendamento ou perfil profissional indisponível neste tenant.');
+    }
+    if (new Date(appointment.start).getTime() !== new Date(expectedStart).getTime()) {
+        return skipDispatch(dispatch, 'Horário do agendamento foi alterado antes do aviso.');
+    }
+    if (event === 'created' && appointment.status === 'CANCELLED') {
+        return skipDispatch(dispatch, 'Agendamento cancelado antes do aviso de criação.');
+    }
+    if (event === 'cancelled' && appointment.status !== 'CANCELLED') {
+        return skipDispatch(dispatch, 'O agendamento não está cancelado.');
+    }
+    if (job.data.transitionId && appointmentEventTransitionId(appointment, event) !== String(job.data.transitionId)) {
+        return skipDispatch(dispatch, 'A transição do agendamento foi substituída antes do aviso.');
+    }
+    const recipient = recipientFromBarberProfile(profile);
+    const settings = reminderSettings(profile);
+    const customer = appointment.user ? userView(appointment.user) : null;
+    const customerName = appointment.customerName || customer?.name || 'Cliente';
+    const localDate = dateKey(localParts(appointment.start, settings.timezone));
+    const link = publicLink(`/barber/calendario?date=${encodeURIComponent(localDate)}`);
+    const cancelled = event === 'cancelled';
+    return deliver(dispatch, {
+        recipients: [recipient],
+        channels: ALLOWED_CHANNELS,
+        title: cancelled ? 'Agendamento cancelado pelo cliente' : 'Novo agendamento recebido',
+        body: `${customerName} ${cancelled ? 'cancelou' : 'agendou'} ${appointment.serviceName} para ${formatDateTime(appointment.start, settings.timezone)} em ${profile.businessName}. Consulte sua agenda: ${link}`,
+        metadata: {
+            appointmentStart: appointment.start.toISOString(),
+            appointmentEvent: event,
+            transitionId: job.data.transitionId || appointmentEventTransitionId(appointment, event),
+            customerId: appointment.user ? String(appointment.user._id) : null
+        }
+    });
+}
+
 function billingIdempotency(profileId, expectedPeriodEnd, daysBefore) {
     return `cortsme:billing:${profileId}:${new Date(expectedPeriodEnd).getTime()}:${daysBefore}`;
 }
@@ -384,11 +503,7 @@ async function processBillingReminder(job, dispatch) {
     }
     const settings = reminderSettings(profile);
     if (!settings.enabled || !settings.billingRemindersEnabled) return skipDispatch(dispatch, 'Lembretes financeiros desativados.');
-    const owner = userView(profile.owner);
-    const recipient = recipientFromUser(profile.owner, {
-        externalId: `barber:${profileId}:${profile.owner._id}`,
-        phone: profile.whatsapp || owner.phone
-    });
+    const recipient = recipientFromBarberProfile(profile);
     const secure = await createSecureLink({
         purpose: 'FINANCE_ACCESS', userId: profile.owner._id, profileId,
         expiresInSeconds: Math.max(2 * DAY_MS / 1000, Number(daysBefore) * DAY_MS / 1000 + 2 * DAY_MS / 1000),
@@ -432,11 +547,7 @@ async function processBarberDaily(job, dispatch) {
         status: { $nin: ['CANCELLED'] }
     }).populate('user').sort({ start: 1 }).lean();
     if (!appointments.length) return skipDispatch(dispatch, 'Nenhum agendamento para o dia.');
-    const owner = userView(profile.owner);
-    const recipient = recipientFromUser(profile.owner, {
-        externalId: `barber:${profileId}:${profile.owner._id}`,
-        phone: profile.whatsapp || owner.phone
-    });
+    const recipient = recipientFromBarberProfile(profile);
     const visible = appointments.slice(0, 20).map((item) => {
         const customer = item.user ? userView(item.user).name : item.customerName || 'Cliente';
         return `${formatTime(item.start, settings.timezone)} — ${customer} — ${item.serviceName}`;
@@ -497,10 +608,16 @@ async function processNotificationJob(job) {
     if (job.name === 'barber-daily-reminder' && dispatch.entityId !== `${job.data.profileId}:${job.data.localDate}`) {
         return skipDispatch(dispatch, 'Job rejeitado por divergência de agenda diária.');
     }
+    if (['barber-appointment-created', 'barber-appointment-cancelled'].includes(job.name)
+        && dispatch.entityId !== String(job.data.appointmentId || '')) {
+        return skipDispatch(dispatch, 'Job rejeitado por divergência de agendamento do profissional.');
+    }
     if (job.name === 'password-reset') return processPasswordReset(job, dispatch);
     if (job.name === 'appointment-reminder') return processAppointmentReminder(job, dispatch);
     if (job.name === 'billing-reminder') return processBillingReminder(job, dispatch);
     if (job.name === 'barber-daily-reminder') return processBarberDaily(job, dispatch);
+    if (job.name === 'barber-appointment-created') return processBarberAppointmentEvent(job, dispatch, 'created');
+    if (job.name === 'barber-appointment-cancelled') return processBarberAppointmentEvent(job, dispatch, 'cancelled');
     return skipDispatch(dispatch, `Job desconhecido: ${job.name}`);
 }
 
@@ -509,10 +626,16 @@ module.exports = {
     publicBaseUrl,
     publicLink,
     normalizePhone,
+    recipientFromUser,
+    recipientFromBarberProfile,
+    appointmentEventTransitionId,
+    barberAppointmentEventIdempotency,
     reminderSettings,
     localParts,
     localDayBounds,
     enqueuePasswordReset,
+    enqueueBarberAppointmentCreated,
+    enqueueBarberAppointmentCancelled,
     scheduleAppointmentReminders,
     cancelAppointmentReminders,
     revokeAppointmentLinks,

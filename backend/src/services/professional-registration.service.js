@@ -37,6 +37,7 @@ function normalizeProfessionalPayload(payload = {}, options = {}) {
             name: payload.name,
             email: payload.email,
             phone: payload.phone,
+            whatsappMetaPhone: payload.whatsappMetaPhone,
             password: payload.password,
             avatar: payload.avatar
         },

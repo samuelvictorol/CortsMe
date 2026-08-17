@@ -76,12 +76,12 @@
           Informe os dados do seu negócio abaixo. Seu nome e e-mail virão do Google; a URL é opcional.
         </q-banner>
 
-        <div v-if="registerMode && !isProfessional" class="avatar-picker">
+        <div v-if="registerMode" class="avatar-picker">
           <q-avatar size="64px" color="grey-3" text-color="dark">
-            <img v-if="avatarPreview" :src="avatarPreview" alt="Prévia da foto de perfil">
+            <img v-if="registrationAvatarPreview" :src="registrationAvatarPreview" alt="Prévia da foto de perfil">
             <q-icon v-else name="person" />
           </q-avatar>
-          <div class="avatar-copy"><b>Sua foto</b><span>Ajuda o profissional a reconhecer você.</span><small>JPG, PNG ou WebP · até 4 MB</small></div>
+          <div class="avatar-copy"><b>{{ isProfessional ? 'Foto do profissional' : 'Sua foto' }}</b><span>{{ isProfessional ? 'Identifica você no painel e para a equipe.' : 'Ajuda o profissional a reconhecer você.' }}</span><small>JPG, PNG ou WebP · até 4 MB</small></div>
           <q-btn outline rounded no-caps icon="photo_camera" :label="avatarFile ? 'Trocar' : 'Adicionar'" class="avatar-upload">
             <q-file
               class="absolute-full transparent-file"
@@ -92,6 +92,18 @@
               @rejected="avatarRejected"
             />
           </q-btn>
+          <q-input
+            v-model.trim="form.avatarUrl"
+            outlined rounded dense
+            class="avatar-url"
+            label="Ou use uma URL HTTPS"
+            placeholder="https://exemplo.com/minha-foto.jpg"
+            :rules="[avatarUrlRule]"
+            lazy-rules
+            @update:model-value="prepareAvatarUrl"
+          >
+            <template #prepend><q-icon name="link" /></template>
+          </q-input>
         </div>
 
         <q-form class="auth-fields" @submit="submit">
@@ -232,7 +244,7 @@ const audienceOptions = [
 ]
 const audience = ref(route.query.perfil === 'profissional' || route.query.plano ? 'professional' : 'client')
 const professionalRegistrationMethod = ref('google')
-const form = reactive({ name: '', businessName: '', identity: '', phone: '', password: '', slug: '' })
+const form = reactive({ name: '', businessName: '', identity: '', phone: '', password: '', slug: '', avatarUrl: '' })
 const loading = ref(false)
 const showPassword = ref(false)
 const avatarFile = ref(null)
@@ -244,6 +256,7 @@ const registerMode = computed(() => route.path === '/cadastro')
 const isProfessional = computed(() => audience.value === 'professional')
 const selectedPlan = computed(() => String(route.query.plano || '').trim())
 const googleProfessionalRegistration = computed(() => registerMode.value && isProfessional.value && professionalRegistrationMethod.value === 'google')
+const registrationAvatarPreview = computed(() => avatarPreview.value || (/^https:\/\//i.test(form.avatarUrl) ? form.avatarUrl : ''))
 const googleEligible = computed(() => !registerMode.value || !isProfessional.value || googleProfessionalRegistration.value)
 const googleContext = computed(() => googleProfessionalRegistration.value
   ? 'O Google criará sua conta profissional e o espaço deste negócio, sem senha.'
@@ -280,10 +293,10 @@ function phoneRule (value) { return String(value || '').replace(/\D/g, '').lengt
 function optionalPhoneRule (value) { return !value || phoneRule(value) }
 function passwordRule (value) { return String(value || '').length >= 8 || 'Use pelo menos 8 caracteres.' }
 function slugRule (value) { return !value || /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) || 'Use letras minúsculas, números e hífens.' }
+function avatarUrlRule (value) { if (!value) return true; try { const url = new URL(value); return url.protocol === 'https:' || 'Use uma URL HTTPS válida.' } catch { return 'Use uma URL HTTPS válida.' } }
 
 function selectAudience (value) {
   audience.value = value
-  if (value === 'professional') clearAvatarPreview()
   router.replace({ query: { ...route.query, perfil: value === 'professional' ? 'profissional' : 'cliente' } })
 }
 
@@ -304,7 +317,7 @@ function clearAvatarPreview () {
 }
 
 function resetForm () {
-  Object.assign(form, { name: '', businessName: '', identity: '', phone: '', password: '', slug: '' })
+  Object.assign(form, { name: '', businessName: '', identity: '', phone: '', password: '', slug: '', avatarUrl: '' })
   showPassword.value = false
   clearAvatarPreview()
 }
@@ -314,6 +327,13 @@ function prepareAvatar (file) {
   if (avatarPreview.value) URL.revokeObjectURL(avatarPreview.value)
   avatarFile.value = file
   avatarPreview.value = URL.createObjectURL(file)
+  form.avatarUrl = ''
+}
+
+function prepareAvatarUrl (value) {
+  if (!value || !avatarFile.value) return
+  clearAvatarPreview()
+  form.avatarUrl = value
 }
 
 function avatarRejected () { $q.notify({ type: 'negative', message: 'Use uma imagem JPG, PNG ou WebP de até 4 MB.' }) }
@@ -345,19 +365,30 @@ function destinationAfterAuth (role) {
   return { path: '/barber/financeiro', query: { plan, autoCheckout: '1' } }
 }
 
-async function uploadCustomerAvatar () {
-  if (!avatarFile.value) return
+async function syncRegistrationAvatar () {
+  if (!avatarFile.value && !form.avatarUrl) return
   try {
-    const upload = new FormData()
-    upload.append('image', avatarFile.value)
-    const { data } = await api.post('/auth/avatar', upload)
+    let response
+    if (avatarFile.value) {
+      const upload = new FormData()
+      upload.append('image', avatarFile.value)
+      response = await api.post('/auth/avatar', upload)
+    } else {
+      response = await api.put('/auth/avatar', { url: form.avatarUrl })
+    }
+    const { data } = response
     auth.updateUser(data.user)
   } catch {
-    $q.notify({ type: 'warning', message: 'Conta criada. Você pode adicionar sua foto depois em Meu perfil.' })
+    $q.notify({ type: 'warning', message: 'Conta criada. Você pode adicionar sua foto depois nas configurações do perfil.' })
   }
 }
 
 async function submit () {
+  const avatarValidation = avatarUrlRule(form.avatarUrl)
+  if (registerMode.value && avatarValidation !== true) {
+    $q.notify({ type: 'negative', message: avatarValidation })
+    return
+  }
   loading.value = true
   try {
     let result
@@ -371,8 +402,8 @@ async function submit () {
         })
       } else {
         result = await auth.register({ name: form.name, email: form.identity, phone: form.phone, password: form.password })
-        await uploadCustomerAvatar()
       }
+      await syncRegistrationAvatar()
     } else {
       result = await auth.login({ identity: form.identity, password: form.password })
       orientRole(result.user)
@@ -388,6 +419,15 @@ async function submit () {
 function googleUnavailable () { $q.notify({ message: 'O login Google está temporariamente indisponível.', color: 'dark', icon: 'info' }) }
 
 async function handleGoogle (response) {
+  const avatarValidation = avatarUrlRule(form.avatarUrl)
+  if (registerMode.value && avatarValidation !== true) {
+    $q.notify({ type: 'negative', message: avatarValidation })
+    return
+  }
+  if (registerMode.value && !isProfessional.value && optionalPhoneRule(form.phone) !== true) {
+    $q.notify({ type: 'negative', message: 'Informe um telefone válido com DDD ou deixe o campo vazio.' })
+    return
+  }
   if (googleProfessionalRegistration.value) {
     if (!String(form.businessName || '').trim()) {
       $q.notify({ type: 'negative', message: 'Informe o nome do salão ou da barbearia antes de continuar com o Google.' })
@@ -403,20 +443,23 @@ async function handleGoogle (response) {
     }
   }
   try {
-    const registration = googleProfessionalRegistration.value
-      ? {
-          businessName: form.businessName,
-          phone: form.phone,
-          ...(form.slug ? { slug: form.slug } : {}),
-          ...(selectedPlan.value ? { planCode: selectedPlan.value } : {})
-        }
-      : {}
+    const registration = {
+      ...(registerMode.value && form.phone ? { phone: form.phone } : {}),
+      ...(googleProfessionalRegistration.value
+        ? {
+            businessName: form.businessName,
+            ...(form.slug ? { slug: form.slug } : {}),
+            ...(selectedPlan.value ? { planCode: selectedPlan.value } : {})
+          }
+        : {})
+    }
     const { data } = await api.post('/auth/google', {
       credential: response.credential,
       accountType: isProfessional.value ? 'professional' : 'client',
       ...registration
     })
     auth.setSession(data)
+    if (registerMode.value) await syncRegistrationAvatar()
     orientRole(data.user)
     await router.push(destinationAfterAuth(data.user?.role))
   } catch (error) {
@@ -458,4 +501,5 @@ onBeforeUnmount(clearAvatarPreview)
 .registration-method{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:-5px 0 16px}.registration-method button{min-width:0;padding:11px 12px;display:grid;grid-template-columns:28px 1fr;align-items:center;gap:8px;border:1px solid #dfe3dc;border-radius:13px;background:#fff;color:#4b544e;text-align:left;cursor:pointer}.registration-method button.active{border-color:#202721;background:#f2f7e9;color:#202721}.registration-method .q-icon{font-size:21px}.registration-method b,.registration-method small{display:block}.registration-method b{font-size:10px}.registration-method small{margin-top:2px;color:#89918c;font-size:8px}.google-registration-note{margin:0 0 15px;border:1px solid #e2e7da;background:#fafcf7;color:#69736c;font-size:9px;line-height:1.5}.login-meta a{color:#28302b;font-weight:800}.google-profile-context{display:flex;align-items:center;justify-content:center;gap:7px;margin:-9px 0 12px;color:#747d77;font-size:9px;text-align:center}.google-profile-context .q-icon{color:#6e8b3e;font-size:17px}
 @media(max-width:520px){.registration-method{grid-template-columns:1fr}.google-registration-note{font-size:8px}}
 @media(max-width:600px){.login-meta{align-items:flex-start;flex-direction:column;gap:6px}}
+.avatar-url{grid-column:2/-1;width:100%}@media(max-width:600px){.avatar-url{grid-column:1/-1}}
 </style>

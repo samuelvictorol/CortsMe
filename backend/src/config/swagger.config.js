@@ -39,6 +39,8 @@ const swaggerSpec = swaggerJsdoc({
                         _id: { type: 'string', example: '64b7f1d24f1c2a0012345678' },
                         name: { type: 'string', example: 'Samuel Silva' },
                         email: { type: 'string', format: 'email', example: 'samuel@example.com' },
+                        phone: { type: 'string', example: '61981748795' },
+                        whatsappMetaPhone: { type: 'string', pattern: '^\\+55[1-9]\\d[1-9]\\d{7,8}$', example: '+556181748795' },
                         createdAt: { type: 'string', format: 'date-time' },
                         updatedAt: { type: 'string', format: 'date-time' }
                     }
@@ -49,6 +51,8 @@ const swaggerSpec = swaggerJsdoc({
                     properties: {
                         name: { type: 'string', example: 'Samuel Silva' },
                         email: { type: 'string', format: 'email', example: 'samuel@example.com' },
+                        phone: { type: 'string', example: '(61) 98174-8795' },
+                        whatsappMetaPhone: { type: 'string', pattern: '^\\+55[1-9]\\d[1-9]\\d{7,8}$', example: '+556181748795' },
                         password: { type: 'string', format: 'password', minLength: 8, example: 'senha-segura' }
                     }
                 },

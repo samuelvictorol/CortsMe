@@ -113,11 +113,16 @@ test('novo cliente Google continua sendo criado como USER', async () => {
         }
     });
 
-    const result = await authenticate({ credential: 'token', accountType: 'client' });
+    const result = await authenticate({
+        credential: 'token',
+        accountType: 'client',
+        phone: '(61) 98174-8795'
+    });
 
     assert.equal(result.user.role, 'USER');
     assert.equal(created.role, 'USER');
     assert.equal(created.payload.email, 'profissional@example.com');
+    assert.equal(created.payload.phone, '(61) 98174-8795');
 });
 
 test('Google sem e-mail verificado é rejeitado', async () => {

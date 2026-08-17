@@ -52,7 +52,7 @@ function createGoogleAuthService(dependencies = {}) {
                     'PROFESSIONAL_ACCOUNT_REQUIRED'
                 );
             }
-            if (!user.avatar && payload.picture) {
+            if (!user.avatar && !user.avatarMedia && payload.picture) {
                 user.avatar = payload.picture;
                 await user.save();
             }
@@ -65,6 +65,7 @@ function createGoogleAuthService(dependencies = {}) {
                 email,
                 avatar: payload.picture,
                 phone: request.phone,
+                whatsappMetaPhone: request.whatsappMetaPhone,
                 businessName: request.businessName,
                 slug: request.slug,
                 planCode: request.planCode
@@ -75,7 +76,9 @@ function createGoogleAuthService(dependencies = {}) {
         user = await deps.createGoogleUser({
             name,
             email,
-            avatar: payload.picture
+            avatar: payload.picture,
+            phone: request.phone,
+            whatsappMetaPhone: request.whatsappMetaPhone
         }, 'USER');
         return { user, created: true };
     };

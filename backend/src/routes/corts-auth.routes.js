@@ -1,8 +1,7 @@
 const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const multer = require('multer');
-const { User, Media, SecureLink } = require('../collections/CortsmeModels');
+const { User, SecureLink } = require('../collections/CortsmeModels');
 const { createUser, findByIdentity, userView, updateUser } = require('../services/user.service');
 const { requireAuth } = require('../middlewares/corts-auth.middleware');
 const { asyncRoute } = require('./route.helpers');
@@ -11,7 +10,7 @@ const { createSecureLink, verifySecureLink, consumeSecureLink } = require('../se
 const { enqueuePasswordReset } = require('../services/notification.service');
 const { disconnectUserSockets } = require('../realtime/socket');
 const { authenticateGoogle } = require('../services/google-auth.service');
-const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024 }, fileFilter: (req, file, callback) => callback(file.mimetype.startsWith('image/') ? null : new Error('Envie apenas imagens.'), file.mimetype.startsWith('image/')) });
+const { parseAvatarUpload, saveAvatarUpload, setAvatarUrl, avatarPublicUrl } = require('../services/avatar.service');
 
 function session(user) {
     return {
@@ -46,6 +45,7 @@ router.post('/register', asyncRoute(async (req, res) => {
  *               name: { type: string, example: Samuel Silva }
  *               email: { type: string, format: email, example: samuel@example.com }
  *               phone: { type: string, example: "(11) 99999-9999" }
+ *               whatsappMetaPhone: { type: string, pattern: '^\\+55[1-9]\\d[1-9]\\d{7,8}$', example: '+556181748795' }
  *               password: { type: string, format: password, minLength: 8 }
  *               businessName: { type: string, maxLength: 120, example: Barbearia Samuel }
  *               slug: { type: string, example: barbearia-samuel }
@@ -156,12 +156,19 @@ router.patch('/me', requireAuth, asyncRoute(async (req, res) => {
     res.json(passwordChanged ? session(req.user) : { user: userView(req.user) });
 }));
 
-router.post('/avatar', requireAuth, avatarUpload.single('image'), asyncRoute(async (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Selecione uma imagem.' });
-    const media = await Media.create({ owner: req.auth.userId, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, data: req.file.buffer });
-    req.user.avatar = `${process.env.API_PUBLIC_URL || `${req.protocol}://${req.get('host')}`}/api/media/${media._id}`;
-    await req.user.save();
-    res.status(201).json({ user: userView(req.user), url: req.user.avatar });
+router.post('/avatar', requireAuth, parseAvatarUpload, asyncRoute(async (req, res) => {
+    const user = await saveAvatarUpload(req.auth.userId, req.file);
+    res.status(201).json({ user: userView(user), url: avatarPublicUrl(user), source: 'upload' });
+}));
+
+router.put('/avatar', requireAuth, asyncRoute(async (req, res) => {
+    const user = await setAvatarUrl(req.auth.userId, req.body?.url);
+    res.json({ user: userView(user), url: avatarPublicUrl(user), source: user.avatar ? 'url' : '' });
+}));
+
+router.delete('/avatar', requireAuth, asyncRoute(async (req, res) => {
+    const user = await setAvatarUrl(req.auth.userId, '');
+    res.json({ user: userView(user), url: '', source: '' });
 }));
 
 module.exports = router;

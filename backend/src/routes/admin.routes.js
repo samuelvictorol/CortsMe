@@ -4,7 +4,7 @@ const {
     BillingPlan, Subscription, BillingPayment, NotificationDispatch
 } = require('../collections/CortsmeModels');
 const { requireAuth, allowRoles } = require('../middlewares/corts-auth.middleware');
-const { createUser, updateUser, userView, findByIdentity } = require('../services/user.service');
+const { updateUser, userView, findByIdentity } = require('../services/user.service');
 const { createDefaultProfile, uniqueSlug } = require('../services/profile.service');
 const { notifyAppointment } = require('../services/appointment.service');
 const { appendAppointmentHistory } = require('../services/appointment-history.service');
@@ -13,8 +13,27 @@ const {
     getBillingSettings, updateBillingSettings, settingsView, planView, normalizePlanPayload,
     ensureSubscription, calculateSubscriptionState, adjustSubscription, confirmPayment, notifyBillingChanged
 } = require('../services/billing.service');
-const { getActivity: getNotifyFlowActivity, getStatus: getNotifyFlowStatus } = require('../services/notifyflow.service');
+const {
+    getActivity: getNotifyFlowActivity,
+    getActivityDetail: getNotifyFlowActivityDetail,
+    getStatus: getNotifyFlowStatus
+} = require('../services/notifyflow.service');
 const { scheduleAppointmentReminders, cancelAppointmentReminders, revokeAppointmentLinks } = require('../services/notification.service');
+const {
+    listDispatches: listNotifyFlowDispatches,
+    getDispatch: getNotifyFlowDispatch,
+    getQueueStatus: getNotifyFlowQueueStatus
+} = require('../services/notification-admin.service');
+const { listCombinedActivity: listNotifyFlowCombinedActivity } = require('../services/notification-feed.service');
+const { parseAdminUserPayload, createAdminUser } = require('../services/admin-user.service');
+const {
+    parseAvatarUpload,
+    validateAvatarFile,
+    normalizeAvatarUrl,
+    avatarPublicUrl,
+    saveAvatarUpload,
+    setAvatarUrl
+} = require('../services/avatar.service');
 
 router.use(requireAuth, allowRoles('ADMIN'));
 
@@ -33,8 +52,29 @@ router.get('/notifyflow/activity', asyncRoute(async (req, res) => {
     res.json(result);
 }));
 
+router.get('/notifyflow/feed', asyncRoute(async (req, res) => {
+    res.json(await listNotifyFlowCombinedActivity(req.query, pageOptions(req.query)));
+}));
+
+router.get('/notifyflow/activity/:type/:activityId', asyncRoute(async (req, res) => {
+    res.json(await getNotifyFlowActivityDetail(req.params.type, req.params.activityId));
+}));
+
+router.get('/notifyflow/dispatches', asyncRoute(async (req, res) => {
+    res.json(await listNotifyFlowDispatches(req.query, pageOptions(req.query)));
+}));
+
+router.get('/notifyflow/dispatches/:id', asyncRoute(async (req, res) => {
+    if (!/^[a-f\d]{24}$/i.test(String(req.params.id || ''))) {
+        return res.status(404).json({ message: 'Disparo não encontrado.' });
+    }
+    const result = await getNotifyFlowDispatch(req.params.id);
+    if (!result) return res.status(404).json({ message: 'Disparo não encontrado.' });
+    res.json(result);
+}));
+
 router.get('/notifyflow/status', asyncRoute(async (req, res) => {
-    const [remote, localCounts, recentFailures] = await Promise.all([
+    const [remote, localCounts, recentFailures, localQueue] = await Promise.all([
         getNotifyFlowStatus().catch((error) => ({
             success: false,
             connected: false,
@@ -43,13 +83,15 @@ router.get('/notifyflow/status', asyncRoute(async (req, res) => {
         })),
         NotificationDispatch.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
         NotificationDispatch.find({ status: 'FAILED' }).sort({ updatedAt: -1 }).limit(5)
-            .select('kind entityType entityId lastError updatedAt profile').lean()
+            .select('kind entityType entityId lastError updatedAt profile').lean(),
+        getNotifyFlowQueueStatus()
     ]);
     res.json({
         notifyFlow: remote,
         local: {
             counts: Object.fromEntries(localCounts.map((item) => [item._id, item.count])),
-            recentFailures
+            recentFailures,
+            queue: localQueue
         }
     });
 }));
@@ -230,23 +272,47 @@ router.get('/users', asyncRoute(async (req, res) => {
     res.json(paged(items.map(userView), total, page, limit));
 }));
 
-router.post('/users', asyncRoute(async (req, res) => {
-    const role = req.body.role === 'BARBER' ? 'BARBER' : 'USER';
-    const user = await createUser(req.body, role);
-    let profile = null;
-    if (role === 'BARBER') profile = await createDefaultProfile(user._id, req.body.businessName || user.name, req.body.slug);
-    res.status(201).json({ user: userView(user), profile });
+router.post('/users', parseAvatarUpload, asyncRoute(async (req, res) => {
+    const payload = parseAdminUserPayload(req.body);
+    const result = await createAdminUser(payload, req.file);
+    res.status(201).json({
+        user: userView(result.user),
+        profile: result.profile,
+        ...(result.avatarWarning ? { avatarWarning: result.avatarWarning } : {})
+    });
 }));
 
-router.patch('/users/:id', asyncRoute(async (req, res) => {
+router.patch('/users/:id', parseAvatarUpload, asyncRoute(async (req, res) => {
+    const payload = parseAdminUserPayload(req.body);
     const user = await User.findById(req.params.id).select('+password');
     if (!user) return res.status(404).json({ message: 'Usuário não encontrado.' });
-    if (user.role === 'ADMIN' && req.body.role && req.body.role !== 'ADMIN') return res.status(400).json({ message: 'O administrador do sistema é fixo.' });
+    if (user.role === 'ADMIN' && payload.role && payload.role !== 'ADMIN') return res.status(400).json({ message: 'O administrador do sistema é fixo.' });
+    if (req.file) validateAvatarFile(req.file);
+    const hasAvatarValue = Object.prototype.hasOwnProperty.call(payload, 'avatar');
+    const requestedAvatar = hasAvatarValue ? String(payload.avatar || '').trim() : undefined;
+    const avatarChanged = !req.file && hasAvatarValue && requestedAvatar !== avatarPublicUrl(user);
+    if (avatarChanged) normalizeAvatarUrl(requestedAvatar);
+    delete payload.avatar;
     const oldRole = user.role;
-    if (['USER', 'BARBER'].includes(req.body.role)) user.role = req.body.role;
-    await updateUser(user, req.body);
-    if (oldRole !== 'BARBER' && user.role === 'BARBER' && !await BarberProfile.exists({ owner: user._id })) await createDefaultProfile(user._id, req.body.businessName || user.name, req.body.slug);
-    res.json({ user: userView(user) });
+    if (['USER', 'BARBER'].includes(payload.role)) user.role = payload.role;
+    let savedUser = await updateUser(user, payload);
+    if (oldRole !== 'BARBER' && savedUser.role === 'BARBER' && !await BarberProfile.exists({ owner: savedUser._id })) {
+        await createDefaultProfile(savedUser._id, payload.businessName || savedUser.name, payload.slug);
+    }
+    let avatarWarning = '';
+    try {
+        if (req.file) savedUser = await saveAvatarUpload(savedUser._id, req.file);
+        else if (avatarChanged) savedUser = await setAvatarUrl(savedUser._id, requestedAvatar);
+    } catch (error) {
+        avatarWarning = req.file
+            ? 'Os dados foram salvos, mas a nova foto não pôde ser aplicada. O avatar anterior foi preservado.'
+            : 'Os dados foram salvos, mas o avatar não pôde ser alterado. Tente novamente.';
+        console.warn('Alteração administrativa concluída com aviso de avatar.', {
+            userId: String(savedUser._id),
+            code: error.code || 'AVATAR_UPDATE_FAILED'
+        });
+    }
+    res.json({ user: userView(savedUser), ...(avatarWarning ? { avatarWarning } : {}) });
 }));
 
 router.delete('/users/:id', asyncRoute(async (req, res) => {

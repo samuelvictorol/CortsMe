@@ -76,13 +76,22 @@ async function createNotification(payload) {
 }
 
 async function getActivity(params = {}) {
-    const allowed = ['page', 'limit', 'status', 'channel', 'search'];
+    const allowed = ['page', 'limit', 'status', 'channel', 'search', 'type', 'from', 'to'];
     const safeParams = Object.fromEntries(allowed.filter((key) => params[key] !== undefined && params[key] !== '').map((key) => [key, params[key]]));
     return request('get', ACTIVITY_PATH, { params: safeParams });
+}
+
+async function getActivityDetail(type, activityId) {
+    const normalizedType = String(type || '').toLowerCase();
+    const normalizedId = String(activityId || '').toLowerCase();
+    if (!['notification', 'schedule'].includes(normalizedType) || !/^[a-f\d]{24}$/.test(normalizedId)) {
+        throw Object.assign(new Error('Atividade NotifyFlow inválida.'), { statusCode: 400, code: 'NOTIFYFLOW_ACTIVITY_INVALID' });
+    }
+    return request('get', `${ACTIVITY_PATH}/${normalizedType}/${normalizedId}`);
 }
 
 async function getStatus() {
     return request('get', STATUS_PATH);
 }
 
-module.exports = { createNotification, getActivity, getStatus, integrationReady, integrationConfig };
+module.exports = { createNotification, getActivity, getActivityDetail, getStatus, integrationReady, integrationConfig };

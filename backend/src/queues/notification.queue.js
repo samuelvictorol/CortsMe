@@ -65,6 +65,30 @@ async function registerReminderSchedulers() {
     });
 }
 
+async function notificationQueueSnapshot() {
+    const notifications = getNotificationQueue();
+    const counts = await notifications.getJobCounts('waiting', 'active', 'delayed', 'completed', 'failed', 'paused');
+    return { name: QUEUE_NAME, ...counts };
+}
+
+async function notificationJobSnapshot(jobId) {
+    if (!jobId) return null;
+    const job = await getNotificationQueue().getJob(String(jobId));
+    if (!job) return null;
+    return {
+        id: String(job.id),
+        name: job.name,
+        state: await job.getState(),
+        progress: job.progress,
+        attemptsMade: Number(job.attemptsMade || 0),
+        failedReason: job.failedReason || '',
+        timestamp: job.timestamp ? new Date(job.timestamp) : null,
+        processedOn: job.processedOn ? new Date(job.processedOn) : null,
+        finishedOn: job.finishedOn ? new Date(job.finishedOn) : null,
+        delay: Number(job.delay || 0)
+    };
+}
+
 async function closeNotificationQueue() {
     const currentQueue = queue;
     const currentConnection = connection;
@@ -80,6 +104,8 @@ module.exports = {
     getNotificationQueue,
     enqueueNotificationJob,
     registerReminderSchedulers,
+    notificationQueueSnapshot,
+    notificationJobSnapshot,
     closeNotificationQueue,
     jobIdFor
 };

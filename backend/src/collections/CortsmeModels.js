@@ -8,8 +8,11 @@ const userSchema = new Schema({
     emailHash: { type: String, sparse: true, unique: true, index: true },
     phoneEncrypted: { type: String, default: '' },
     phoneHash: { type: String, sparse: true, unique: true, index: true },
+    whatsappMetaPhoneEncrypted: { type: String, default: '' },
     password: { type: String, select: false },
-    avatar: { type: String, default: '' },
+    avatar: { type: String, default: '', maxlength: 2048 },
+    avatarMedia: { type: Schema.Types.ObjectId, ref: 'Media', default: null },
+    avatarUpdatedAt: { type: Date, default: null },
     role: { type: String, enum: ['ADMIN', 'BARBER', 'USER'], default: 'USER', index: true },
     provider: { type: String, enum: ['local', 'google'], default: 'local' },
     active: { type: Boolean, default: true },
@@ -144,9 +147,27 @@ const botLogSchema = new Schema({
 const mediaSchema = new Schema({
     owner: { type: Schema.Types.ObjectId, ref: 'CortsmeUser', required: true },
     profile: { type: Schema.Types.ObjectId, ref: 'BarberProfile', default: null },
-    filename: String, mimeType: String, size: Number,
-    data: { type: Buffer, required: true }
+    kind: { type: String, enum: ['general', 'site', 'avatar'], default: 'general', index: true },
+    filename: { type: String, default: '', maxlength: 160 },
+    mimeType: { type: String, required: true, maxlength: 80 },
+    size: { type: Number, required: true, min: 1, max: 6 * 1024 * 1024 },
+    sha256: { type: String, default: '', maxlength: 64 },
+    data: {
+        type: Buffer,
+        required: true,
+        validate: {
+            validator(value) {
+                const limit = this.kind === 'avatar' ? 4 * 1024 * 1024 : 6 * 1024 * 1024;
+                return Buffer.isBuffer(value) && value.length > 0 && value.length <= limit;
+            },
+            message: 'A imagem excede o limite permitido.'
+        }
+    }
 }, { timestamps: true });
+mediaSchema.index(
+    { owner: 1, kind: 1 },
+    { unique: true, partialFilterExpression: { kind: 'avatar' }, name: 'uniq_avatar_per_user' }
+);
 
 const billingSettingsSchema = new Schema({
     key: { type: String, default: 'default', immutable: true, unique: true },
@@ -271,7 +292,10 @@ const notificationDispatchSchema = new Schema({
     user: { type: Schema.Types.ObjectId, ref: 'CortsmeUser', default: null, index: true },
     kind: {
         type: String,
-        enum: ['PASSWORD_RESET', 'BARBER_DAILY', 'BARBER_BILLING', 'CUSTOMER_APPOINTMENT'],
+        enum: [
+            'PASSWORD_RESET', 'BARBER_DAILY', 'BARBER_BILLING', 'CUSTOMER_APPOINTMENT',
+            'BARBER_APPOINTMENT_CREATED', 'BARBER_APPOINTMENT_CANCELLED'
+        ],
         required: true,
         index: true
     },

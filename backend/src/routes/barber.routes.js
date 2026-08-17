@@ -15,7 +15,8 @@ const {
     createCheckout, verifyPaymentReturn
 } = require('../services/billing.service');
 const {
-    reminderSettings, scheduleAppointmentReminders, cancelAppointmentReminders, revokeAppointmentLinks
+    reminderSettings, scheduleAppointmentReminders, cancelAppointmentReminders, revokeAppointmentLinks,
+    enqueueBarberAppointmentCreated
 } = require('../services/notification.service');
 const { normalizeWebhookUrl } = require('../services/webhook.service');
 
@@ -231,6 +232,7 @@ router.post('/appointments', asyncRoute(async (req, res) => {
     markAppointmentCreated(appointment, req.auth.userId);
     await appointment.save();
     await scheduleAppointmentReminders(appointment);
+    await enqueueBarberAppointmentCreated(appointment, { changedBy: req.auth.userId });
     await notifyAppointment(profile, appointment.toObject(), 'created');
     res.status(201).json({ appointment });
 }));
