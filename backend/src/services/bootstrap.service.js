@@ -6,11 +6,22 @@ const { ensureBillingSeed } = require('./billing.service');
 
 const SHOWCASE_VERSION = 3;
 
+async function demoSlugFor(profile, profileModel = BarberProfile) {
+    const preferredSlug = 'barbearia-premium';
+    const preferredSlugInUse = await profileModel.exists({
+        _id: { $ne: profile._id },
+        slug: preferredSlug
+    });
+    return preferredSlugInUse ? profile.slug : preferredSlug;
+}
+
 async function enhanceDemoProfile(profile) {
     if ((profile.showcaseVersion || 0) >= SHOWCASE_VERSION) return profile;
 
+    const demoSlug = await demoSlugFor(profile);
+
     profile.businessName = 'Barbearia Premium';
-    profile.slug = 'barbearia-premium';
+    profile.slug = demoSlug;
     profile.active = true;
     profile.published = true;
     profile.showcaseVersion = SHOWCASE_VERSION;
@@ -45,9 +56,9 @@ async function enhanceDemoProfile(profile) {
         heroSubtitle: 'Técnica, hospitalidade e tempo de qualidade. Uma experiência masculina completa no coração da Avenida Paulista.',
         ctaLabel: 'Reservar minha cadeira',
         banners: [
-            { title: 'Primeira experiência?', subtitle: 'Ganhe uma hidratação premium ao reservar o combo completo.', image: '/demo/premium-barber.jpg', link: '/barbearia-premium/agendar' },
-            { title: 'Dia do noivo', subtitle: 'Um ritual privativo para viver o grande dia com seu time.', image: '/demo/premium-interior.jpg', link: '/barbearia-premium/agendar' },
-            { title: 'Seu horário. Sem espera.', subtitle: 'A agenda online mostra somente horários realmente disponíveis.', image: '/demo/premium-detail.jpg', link: '/barbearia-premium/agendar' }
+            { title: 'Primeira experiência?', subtitle: 'Ganhe uma hidratação premium ao reservar o combo completo.', image: '/demo/premium-barber.jpg', link: `/${demoSlug}/agendar` },
+            { title: 'Dia do noivo', subtitle: 'Um ritual privativo para viver o grande dia com seu time.', image: '/demo/premium-interior.jpg', link: `/${demoSlug}/agendar` },
+            { title: 'Seu horário. Sem espera.', subtitle: 'A agenda online mostra somente horários realmente disponíveis.', image: '/demo/premium-detail.jpg', link: `/${demoSlug}/agendar` }
         ],
         sections: [
             { type: 'about', title: 'Clássico na técnica. Atual na atitude.', text: 'Desde 2018, transformamos o cuidado masculino em um ritual leve e preciso. Cada atendimento começa com escuta, passa por técnica e termina com um estilo que funciona na sua rotina.', image: '/demo/premium-interior.jpg', visible: true },
@@ -59,7 +70,7 @@ async function enhanceDemoProfile(profile) {
             { type: 'testimonial', title: 'Lucas Almeida', text: 'A agenda online é certeira e o atendimento começa no horário. O corte ficou exatamente como conversamos.', buttonLabel: 'Cliente há 2 anos', visible: true },
             { type: 'testimonial', title: 'André Siqueira', text: 'Do site até a cadeira, tudo é impecável. O combo completo virou meu ritual mensal.', buttonLabel: 'Cliente verificado', visible: true },
             { type: 'testimonial', title: 'Bruno Carvalho', text: 'O bot tirou minhas dúvidas e encontrei um horário em menos de dois minutos.', buttonLabel: 'Primeira visita', visible: true },
-            { type: 'cta', title: 'Sua próxima versão começa aqui.', text: 'Escolha a experiência, encontre seu horário e deixe o resto com a gente.', buttonLabel: 'Ver agenda disponível', buttonLink: '/barbearia-premium/agendar', visible: true }
+            { type: 'cta', title: 'Sua próxima versão começa aqui.', text: 'Escolha a experiência, encontre seu horário e deixe o resto com a gente.', buttonLabel: 'Ver agenda disponível', buttonLink: `/${demoSlug}/agendar`, visible: true }
         ],
         socialLinks: { instagram: 'barbeariapremium', tiktok: 'barbeariapremium', youtube: 'barbeariapremium' },
         locationMap: {
@@ -106,4 +117,4 @@ async function ensureSystemData() {
     await ensureBillingSeed(profile);
 }
 
-module.exports = { ensureSystemData, enhanceDemoProfile };
+module.exports = { ensureSystemData, enhanceDemoProfile, demoSlugFor };
