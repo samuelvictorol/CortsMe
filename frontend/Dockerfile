@@ -18,6 +18,7 @@ ENV PORT=80 \
     NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
 
 COPY --chmod=755 docker-entrypoint.d/16-normalize-api-upstream.envsh /docker-entrypoint.d/16-normalize-api-upstream.envsh
+RUN sed -i 's/\r$//' /docker-entrypoint.d/16-normalize-api-upstream.envsh
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist/spa /usr/share/nginx/html
 EXPOSE 80
